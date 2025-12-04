@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.o
+*.bin
+/firmware_stm32/Debug/
+*.pt
