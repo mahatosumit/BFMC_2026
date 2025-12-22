@@ -12,6 +12,12 @@ This repository contains the hardware, firmware, and software development work f
 The project focuses on building a **modular autonomous vehicle development platform** using a **Raspberry Pi + STM32** architecture. Development is carried out incrementally, starting from hardware bring-up and baseline stabilization toward perception-assisted autonomy in later phases.
 
 ---
+## Project Status 1 – Multimedia Reference
+
+🎥 **Project Status 1 Video (Phase 1 – Hardware Bring-up & System Validation)**  
+https://youtube.com/shorts/D1LWJFnpeVo?feature=share
+
+> Note: The video demonstrates Phase-1 hardware bring-up and system validation only.
 
 ## 2. Current Phase Focus (Phase 1)
 
