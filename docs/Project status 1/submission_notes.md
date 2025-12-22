@@ -1,7 +1,7 @@
-# BFMC 2025 – Phase 1 Project Status Report
+# BFMC 2026 – Phase 1 Project Status Report
 
 **Team:** OPTINX
-**Competition:** Bosch Future Mobility Challenge 2025
+**Competition:** Bosch Future Mobility Challenge 2026
 **Phase:** Phase 1 – System Bring-up, Failure Analysis & Baseline Stabilization
 **Platform:** Raspberry Pi 5 + STM32 Nucleo-F401RE
 
