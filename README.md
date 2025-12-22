@@ -1,6 +1,7 @@
 # BFMC 2025 – Autonomous Vehicle Platform
 
-**Team OPTINX**
+**Team:** OPTINX
+**Competition:** Bosch Future Mobility Challenge 2025 (https://boschfuturemobility.com/)
 
 ---
 
@@ -8,55 +9,61 @@
 
 This repository contains the hardware, firmware, and software development work for **BFMC 2025 (Bosch Future Mobility Challenge)**.
 
-The project aims to build a **modular autonomous vehicle platform** using a **Raspberry Pi + STM32** architecture, with incremental progress toward perception-based autonomy.
+The project focuses on building a **modular autonomous vehicle development platform** using a **Raspberry Pi + STM32** architecture. Development is carried out incrementally, starting from hardware bring-up and baseline stabilization toward perception-assisted autonomy in later phases.
 
-### 1.1 Current Focus
+---
 
-The current development phase prioritizes:
+## 2. Current Phase Focus (Phase 1)
 
-* Hardware validation
-* Stable BFMC baseline integration
-* Dataset exploration and perception model training
+The current development phase prioritizes **system stability and compliance** rather than performance optimization.
+
+Key focus areas:
+
+* Hardware bring-up and validation
+* Restoration and stabilization of the official BFMC baseline environment
+* Raspberry Pi ↔ STM32 communication verification
+* Dataset exploration and offline perception feasibility studies
 * Preliminary race track analysis
-* Preparation for the first BFMC submission
+* Preparation for the BFMC first submission
 
 ---
 
-## 2. Project Objectives
+## 3. Project Objectives
 
-1. Validate BFMC hardware kit functionality
-2. Establish a reliable Raspberry Pi–STM32 control pipeline
+1. Verify correct operation of the BFMC hardware kit
+2. Establish a reliable Raspberry Pi–STM32 command interface
 3. Design a scalable and modular software architecture
-4. Perform preliminary perception model training
+4. Perform **offline** perception model feasibility studies
 5. Analyze BFMC race track constraints for design guidance
-6. Transition incrementally from baseline control to autonomous behavior
+6. Transition incrementally from baseline control toward autonomous behavior
 
 ---
 
-## 3. System Architecture (Current)
+## 4. System Architecture (Current State)
 
-### 3.1 High-Level Design
+### 4.1 High-Level Design
 
 **Raspberry Pi**
 
-* Vision processing
-* Rule-based decision logic
-* High-level control commands
-* Communication with STM32
+* Camera interfacing and vision experimentation
+* High-level decision logic (currently minimal / rule-based)
+* Generation of speed and steering commands
+* Communication with STM32 via USB-Serial
 
 **STM32**
 
 * Motor control
-* Steering control
-* Low-level actuation
+* Steering actuation
+* Low-level timing-critical control
 * Safety handling
 
 > **Note:**
-> Autonomy is currently rule-based. FSM-based logic and learning-based control are planned for later phases.
+> No closed-loop autonomous control is currently claimed.
+> FSM-based decision logic and vision-driven autonomy are planned for later phases.
 
 ---
 
-## 4. Repository Structure
+## 5. Repository Structure
 
 ```
 BFMC_2025/
@@ -68,8 +75,8 @@ BFMC_2025/
 ├── firmware_stm32/           # STM32 firmware (CubeMX / HAL)
 │
 ├── src/                      # Raspberry Pi source code
-│   ├── perception/           # Vision and detection modules
-│   ├── planning/             # FSM and decision logic (future)
+│   ├── perception/           # Vision and detection modules (experimental)
+│   ├── planning/             # FSM and decision logic (planned)
 │   ├── control/              # Vehicle control logic
 │   ├── communication/        # Pi–STM32 communication
 │   └── main.py               # Entry point
@@ -78,142 +85,127 @@ BFMC_2025/
 ├── tools/                    # Utility scripts and debugging tools
 ├── tests/                    # Hardware and software test scripts
 │
-├── requirements.txt          # Python dependencies
+├── requirements.txt          # Python dependencies (non-system)
 ├── .gitignore
 └── README.md
 ```
 
 ---
 
-## 5. Hardware Validation
+## 6. Hardware Validation
 
 Initial hardware verification was performed after receiving the BFMC kit.
 
-| Component | Test Description              | Status |
-| --------- | ----------------------------- | ------ |
-| Motors    | Direction and speed response  | OK     |
-| Steering  | PWM response                  | OK     |
-| Camera    | OS-level detection            | OK     |
-| STM32     | USB/UART communication        | OK     |
-| Power     | Battery and regulation checks | OK     |
+| Component | Test Description                 | Status |
+| --------- | -------------------------------- | ------ |
+| Motors    | Direction and basic response     | OK     |
+| Steering  | PWM response and centering       | OK     |
+| Camera    | OS-level detection (`libcamera`) | OK     |
+| STM32     | USB/Serial communication         | OK     |
+| Power     | Battery and regulation checks    | OK     |
+
+> These tests confirm **basic operability**, not performance tuning.
 
 ---
 
-## 6. Dataset and Model Work
+## 7. Dataset and Perception Work
 
-### 6.1 Dataset
+### 7.1 Dataset
 
-* Source: Roboflow BFMC dataset
+* Source: BFMC-oriented dataset ((https://universe.roboflow.com/bfmc-final/my-first-project-t7joo))
 
-### 6.2 Objectives
+### 7.2 Purpose
 
-* Validate dataset usability
-* Test feasibility of perception models
+* Validate dataset suitability
+* Assess feasibility of perception models
 * Understand camera field-of-view constraints
 
-### 6.3 Model
+### 7.3 Model
 
 * YOLO-based object detection
-* Training completed as proof-of-concept
+* Training completed as an **offline proof-of-concept**
 
-> The trained model is **not yet integrated** into the BFMC runtime pipeline.
-> Integration is planned after baseline software stabilization.
+> The trained model is **not integrated** into the BFMC runtime pipeline.
+> Real-time inference is intentionally deferred until system stability is ensured.
 
 ---
 
-## 7. Race Track Analysis
+## 8. Race Track Analysis
 
-Preliminary BFMC race track analysis was conducted in parallel with software and hardware validation.
+Preliminary analysis of the BFMC track was conducted alongside hardware and software validation.
 
-### 7.1 Activities
+### Activities
 
-* Study of BFMC track layout and constraints
-* Estimation of lane width and minimum turn radius
-* Identification of critical zones:
+* Study of expected track layout and constraints
+* Estimation of lane width and turning radii
+* Identification of critical regions:
 
-  * Sharp turns
+  * Sharp curves
   * Intersections
-  * Stop regions
+  * Stop zones
 
-### 7.2 Design Impact
+### Design Impact
 
 Track analysis informed:
 
-* Camera mounting decisions
-* Steering angle limits
-* Speed constraints
+* Camera mounting considerations
+* Steering angle saturation limits
+* Conservative speed constraints
 
 ---
 
-## 8. Operating System and Environment
+## 9. Operating System & Environment Strategy
 
-* Raspberry Pi OS (fresh installation attempted)
+An initial attempt was made to work from a fresh OS and custom vision stack.
 
-### 8.1 Challenges Encountered
+### Challenges Encountered
 
-* Camera stack incompatibility
-* OpenCV and libcamera conflicts
-* Runtime instability
+* CSI camera resource contention (`libcamera` single-process constraint)
+* OpenCV and camera backend incompatibilities
+* Runtime instability when deviating from BFMC reference services
 
-### 8.2 Engineering Decision
+### Engineering Decision
 
-To ensure submission readiness, the project reverted to the **official BFMC baseline codebase and environment**.
+To ensure stability and competition compliance, the project was reverted to the **official BFMC baseline codebase and environment**.
+All further development is now built on top of this validated baseline.
 
 ---
 
-## 9. Current Project Status
+## 10. Current Project Status
 
 ### Completed
 
-* Hardware validation
-* Dataset exploration
-* Offline perception model training
+* Hardware bring-up and validation
+* Raspberry Pi ↔ STM32 communication verification
+* Identification of camera stack constraints
+* Restoration and stabilization of BFMC baseline
+* Offline perception feasibility study
 * Preliminary race track analysis
-* BFMC baseline code restoration
 
 ### In Progress
 
-* Code refactoring for submission
-* Lane following integration
+* Code cleanup and refactoring for submission
+* Definition of steering and speed command interfaces
 
 ### Planned
 
-* FSM-based autonomy development
+* FSM-based decision logic
+* Lane detection and lane-following integration
+* Centralized vision pipeline integration
 
 ---
 
-## 10. Development Roadmap
-
-### Short-Term
-
-* Stable baseline control
-* Clean software modularization
-* Lane following integration
-
-### Mid-Term
-
-* FSM-based navigation
-* Traffic sign handling
-* Curvature-based speed control
-
-### Long-Term
-
-* Optimized perception pipeline
-* Safety and recovery behaviors
-* Competition track performance tuning
-
----
-
-## 11. Scope Clarification
+## 11. Scope Clarification (Important)
 
 This project does **not** currently claim:
 
 * Full autonomy
-* ROS2 integration
-* End-to-end learning-based control
-* Final competition-ready performance
+* Closed-loop lane keeping
+* Real-time perception deployment
+* ROS2-based architecture
+* Competition-ready performance
 
-All features are developed incrementally with validation at each stage.
+All functionality is developed incrementally, with validation at each stage.
 
 ---
 
@@ -221,5 +213,3 @@ All features are developed incrementally with validation at each stage.
 
 **Team Name:** OPTINX
 
-
-Say the next step.
