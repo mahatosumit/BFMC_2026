@@ -1,4 +1,4 @@
-# BFMC 2025 – Autonomous Vehicle Platform
+# BFMC 2026 – Autonomous Vehicle Platform
 
 **Team:** OPTINX
 **Competition:** Bosch Future Mobility Challenge 2025 (https://boschfuturemobility.com/)
@@ -7,7 +7,7 @@
 
 ## 1. Overview
 
-This repository contains the hardware, firmware, and software development work for **BFMC 2025 (Bosch Future Mobility Challenge)**.
+This repository contains the hardware, firmware, and software development work for **BFMC 2026 (Bosch Future Mobility Challenge)**.
 
 The project focuses on building a **modular autonomous vehicle development platform** using a **Raspberry Pi + STM32** architecture. Development is carried out incrementally, starting from hardware bring-up and baseline stabilization toward perception-assisted autonomy in later phases.
 
