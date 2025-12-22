@@ -1,3 +1,6 @@
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/2b275290-4f78-4fef-88f5-1766ffd68166" />
+
+
 # System Architecture – BFMC 2025
 
 Team: OPTINX  
