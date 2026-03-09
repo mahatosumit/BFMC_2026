@@ -1,205 +1,56 @@
 # BFMC 2026 – Autonomous Embedded Driving Platform
 
-**Team:** OPTINX
-**Competition:** Bosch Future Mobility Challenge 2026
-Official Regulations:
-[https://bosch-future-mobility-challenge-competition-regulation.readthedocs-hosted.com/](https://bosch-future-mobility-challenge-competition-regulation.readthedocs-hosted.com/)
+**Team:** OPTINX  
+**Competition:** Bosch Future Mobility Challenge 2026  
+**Official Regulations:** [BFMC Documentation](https://bosch-future-mobility-challenge-competition-regulation.readthedocs-hosted.com/)
 
-
+---
 
 ## 1. Project Overview
 
-This repository documents the development of Team OPTINX’s autonomous vehicle system for the Bosch Future Mobility Challenge (BFMC) 2026.
+During the current reporting period, Team OPTINX focused on transitioning from initial system integration to a stable autonomous driving system in preparation for the BFMC Qualification Round. A key milestone was the successful integration of the perception pipeline running on a Raspberry Pi 5 with the low-level actuation system implemented on an STM32 microcontroller. This architecture enables real-time interpretation of camera inputs and generation of steering and speed commands.
 
-The system is built on the official 1:10 BFMC vehicle platform using a Raspberry Pi 5 as the high-level controller and an STM32 as the low-level real-time controller. Development follows the official qualification timeline and focuses on achieving incremental autonomous capabilities while maintaining system stability and embedded feasibility.
+The primary objective of this phase was to achieve reliable lane keeping and consistent reactions to traffic elements. Extensive testing and parameter tuning were conducted to reduce steering oscillations, stabilize perception outputs, and minimize latency between perception and actuation. These improvements enabled the vehicle to complete repeated autonomous runs with stable trajectory tracking.
 
-The project has completed the first two report stages and is currently in the Qualification Round phase.
+To support development and testing, a monitoring interface was implemented using a Tkinter-based dashboard. The interface visualizes perception outputs, telemetry data, and a digital twin of the vehicle state. The system includes a lightweight topological map engine capable of loading GraphML road graphs, computing node-to-node routes, and snapping the digital vehicle representation to valid track segments for accurate telemetry visualization and route monitoring. During experiments, the perception pipeline operates between 19 and 25 FPS, depending on scene complexity and lighting conditions.
 
+## 2. Current Architecture & Perception Phase
 
+The system follows a distributed architecture in which perception and behavioral logic run on the Raspberry Pi 5, while the STM32 microcontroller executes deterministic control of steering and motor actuation.
 
-## 2. Qualification Milestones and Status
+### Classical & Semantic Vision
+The lane detection pipeline processes frames from the CSI camera and converts them into a Bird’s Eye View representation. Lane markings are extracted using adaptive thresholding and tracked through a sliding-window polynomial fitting method to estimate lane curvature and centerline. Semantic perception is performed using a quantized YOLOv8 neural network optimized for real-time inference on the Raspberry Pi. The model detects traffic signs, pedestrians, vehicles, and traffic lights. 
 
-Development has been aligned with the official competition milestones.
+To maintain responsiveness, YOLO inference runs asynchronously so that neural network processing does not block the main control loop. Detected signs are processed through a chronological state pipeline that organizes traffic elements along the active driving route. Each element transitions through defined states (`PENDING → DETECTING → ACTING → COMPLETED`), ensuring that traffic behaviors are executed only when the vehicle reaches the appropriate spatial context and preventing premature rule activation.
 
-### First Report – 22 December 2025
+### Kinematic Control
+Vehicle control is handled through a Stanley Kinematic Controller that computes steering commands using cross-track error and heading deviation. Longitudinal speed control is governed by a rule-based traffic decision engine that adapts vehicle behavior to environmental conditions. The system differentiates between driving environments such as city and highway zones and applies dynamic speed multipliers to adjust the target velocity. During testing, the vehicle maintains approximately 20 PWM on standard road sections and 22 PWM on highway segments, ensuring stable navigation while preserving adequate reaction time for perception-driven decisions.
 
-Requirement:
-The team should at least control the car with the given start-up code.
+## 3. Autonomous Performance & Behaviors
 
-Status: Completed
+Significant progress was achieved in perception, control, and system integration. 
+- **Lane Trajectory:** Temporal smoothing using an Exponential Moving Average was introduced to stabilize polynomial lane estimates and reduce steering jitter. A fallback mechanism combining IMU-based dead reckoning and visual odometry was also implemented to maintain trajectory estimation when lane boundaries temporarily disappear.
+- **Stanley Controller Tuning:** Adjustments eliminated oscillatory steering behavior and enabled smooth convergence toward the lane center. A boundary protection mechanism was also implemented to prevent the vehicle from drifting toward track edges.
 
-Achievements:
+### Validated Behaviors
+The vehicle demonstrates reliable lane keeping, performs **autonomous parking using a CSV-driven trajectory playback module**, stops when pedestrians are detected, and executes lane-change maneuvers when a vehicle obstacle is present ahead. The system was also evaluated on ramp sections and tunnel environments, maintaining stable perception and control despite variations in elevation and lighting conditions.
 
-* Official BFMC baseline restored and stabilized
-* Raspberry Pi 5 migration completed
-* STM32 communication verified
-* Motor and steering actuation validated
-* Baseline control confirmed under stable runtime
+### Temporal FSM Overrides
+Additional behavioral constraints were introduced through time-based overrides within the control system. Certain semantic events such as crosswalks or priority zones **temporarily override standard control outputs, enforcing rule-compliant vehicle behavior during predefined time intervals.** System integration tasks were also completed to ensure reliable communication between hardware and software components. A Python daemon manages serial communication between the Raspberry Pi and STM32, while telemetry data including speed, steering angle, and system state are logged and transmitted through the BFMC network interface.
 
-The vehicle operates reliably using the provided start-up framework.
+### Sustainability Considerations
+To reduce material waste during development, the experimental track used for testing was constructed primarily from repurposed laboratory materials. Existing boards and surfaces were refurbished and repainted to recreate BFMC lane markings.
 
+## 4. Encountered Issues & Mitigations
 
+The most significant limitation was the computational load on the Raspberry Pi 5 when running both the lane detection pipeline and YOLO neural network simultaneously. This occasionally introduced latency spikes, which were mitigated through model quantization and asynchronous inference execution.
 
-### Second Report – 2 February 2026
+- **Lighting Calibration:** Lighting variations initially affected lane segmentation accuracy. To improve robustness, camera exposure parameters are calibrated during system initialization and then locked during operation. 
+- **Deterministic Handshake:** Differences in processing frequency between the Pi and STM32 initially caused buffer overruns and delayed actuation. This issue was resolved by implementing a lightweight heartbeat synchronization protocol and improving the microcontroller command parser. 
+- **IMU Injection:** Steering stability was further improved by combining perception-based lane estimation with IMU yaw feedback, enabling smoother trajectory correction.
 
-Requirement:
-The team should link input data to a rough output (e.g., camera to steering control).
+## 5. Next Steps
 
-Status: Completed
+The immediate priority is to perform repeated end-to-end validation runs to ensure stable lane keeping, reliable detection of traffic elements, and consistent autonomous operation. Following qualification, development will focus on improving behavioral robustness, refining intersection handling logic, and enhancing perception performance for dynamic obstacles such as pedestrians and moving vehicles. 
 
-Achievements:
-
-* CSI camera interface stabilized
-* Image stream acquisition validated
-* Visual input linked to steering command output
-* Preliminary perception-to-control mapping implemented
-* Serial command interface refined
-
-The system is capable of processing visual input and generating corresponding steering commands.
-
-
-
-### Qualification Round – 9 March 2026
-
-Requirement:
-The team should demonstrate autonomous features including:
-
-* Lane keeping
-* Basic reaction to standard obstacles (e.g., stopping at a stop sign)
-
-Status: Ongoing
-
-Current focus:
-
-* Lane detection and lane-following integration
-* Stop sign detection and controlled halt logic
-* Closed-loop perception-to-control validation
-* Runtime latency benchmarking
-* Stability testing under track-like conditions
-
-
-
-## 3. System Architecture
-
-### Raspberry Pi 5 (High-Level Controller)
-
-* CSI camera interface
-* Vision preprocessing and model inference
-* Decision logic generation
-* Speed and steering command computation
-* USB-Serial communication with STM32
-
-### STM32 (Low-Level Controller)
-
-* PWM motor control
-* Steering servo actuation
-* IMU handling
-* Timing-critical execution
-* Safety mechanisms
-
-The architecture separates deterministic real-time actuation from high-level perception and planning, ensuring modularity and reliability.
-
-
-
-## 4. Perception Development Status
-
-### Dataset Analysis
-
-Exploratory Data Analysis (EDA) has been conducted to:
-
-* Evaluate class distribution
-* Verify annotation consistency
-* Assess image resolution and camera perspective alignment
-* Identify imbalance and potential edge cases
-
-Insights from EDA are guiding training configuration and augmentation strategy.
-
-
-
-### Model Training
-
-* Model architecture: YOLOv8 (nano variant for embedded feasibility)
-* Image size: 640
-* Batch size: 16
-* Epochs: 100+
-* Optimizer: AdamW
-* Data augmentation enabled
-
-Training metrics including Precision, Recall, mAP50, and mAP50-95 are monitored to evaluate convergence and class-level performance.
-
-Models are currently validated offline. Runtime integration is proceeding in controlled stages aligned with Qualification Round objectives.
-
-
-
-## 5. Engineering Constraints and Design Decisions
-
-Key constraints encountered during development:
-
-* CSI camera resource management limitations
-* Runtime dependencies on official BFMC services
-* Embedded performance constraints on Raspberry Pi 5
-
-Engineering decisions:
-
-* No ROS2 integration
-* Direct USB-Serial communication
-* Lightweight detection model selection
-* Stability prioritized over architectural expansion
-* Baseline compliance maintained
-
-
-
-## 6. Qualification Objectives
-
-Before the Qualification deadline, the system aims to demonstrate:
-
-1. Stable lane keeping under varying curvature
-2. Controlled steering response based on visual input
-3. Reliable stop sign detection and vehicle halt
-4. Deterministic behavior under repeated trials
-
-Testing is focused on ensuring repeatable and stable performance under constrained track scenarios.
-
-
-
-## 7. Repository Structure
-
-```
-BFMC_2026/
-├── docs/
-│   ├── architecture.md
-│   ├── track_analysis.md
-├── firmware_stm32/
-│   ├── main.cpp
-├── src/
-│   ├── perception/
-│   ├── control/
-│   ├── communication/
-│   ├── planning/
-│   ├── main.py
-├── models/
-├── tools/
-└── README.md
-```
-
-The repository is structured to maintain modular subsystem development and incremental validation.
-
-
-
-## 8. Scope Clarification
-
-At the current stage, the system:
-
-* Meets baseline control requirements
-* Establishes perception-to-control linkage
-* Is actively preparing autonomous features for Qualification
-
-Full competition readiness and advanced autonomous behaviors remain under development.
-
-
-
-## 9. Team
-
-Team Name: OPTINX
-
-
+Future work will also target improved object detection consistency, reduced perception latency, and the integration of visual mapping with dead-reckoning techniques to strengthen localization robustness.
