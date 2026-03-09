@@ -3,6 +3,7 @@
 **Team:** OPTINX  
 **Competition:** Bosch Future Mobility Challenge 2026  
 **Official Regulations:** [BFMC Documentation](https://bosch-future-mobility-challenge-competition-regulation.readthedocs-hosted.com/)
+**Video Link** [Qualification Phase(https://youtu.be/07d6nmOjWjI/)]
 
 ---
 
