@@ -51,6 +51,7 @@ except ImportError:
 try:
     from perception.camera import Camera
     from perception.lane_detector import LaneDetector
+    from perception.slot_detection import detect_slot
     from control.controller import Controller
     _AUTO_DRIVE_AVAILABLE = True
 except ImportError:
@@ -94,6 +95,91 @@ def launch_v2x_servers():
 
 # ─────────────────────────────────────────────────────────────
 class MockCtrl: pass
+
+# --- OVERTAKE DEBUG FIX ---
+class HighwayOvertakeManager:
+    def __init__(self):
+        self.state = 'OVERTAKE_IDLE'
+        self.timer = 0.0
+
+    def process(self, draw_frame, yolo_detections, active_blocks, light_status):
+        print("\n--- Overtake Debug ---")
+        print("YOLO detections:", yolo_detections)
+        print("Blocks:", active_blocks)
+        print("Light:", light_status)
+
+        # 1. Visualization & Region split
+        h, w = draw_frame.shape[:2]
+        region_width = w // 3
+        left_bound = region_width
+        right_bound = 2 * region_width
+
+        cv2.line(draw_frame, (left_bound, 0), (left_bound, h), (255, 255, 0), 2)
+        cv2.line(draw_frame, (right_bound, 0), (right_bound, h), (255, 255, 0), 2)
+        cv2.putText(draw_frame, "LEFT", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(draw_frame, "CENTER", (left_bound + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(draw_frame, "RIGHT", (right_bound + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+
+        # 2. Safety Conditions
+        pedestrian_detected = bool(active_blocks.get("pedestrian", False))
+        is_parking = bool(active_blocks.get("parking", False))
+        red_light = 'RED' in light_status
+        
+        # 3. Object Detection in Center
+        car_in_center = False
+        if yolo_detections:
+            for d in yolo_detections:
+                if d["label"].lower() in ["car", "vehicle", "truck", "bus"]:
+                    x1, y1, x2, y2 = d["bbox"]
+                    cx = (x1 + x2) // 2
+                    if left_bound < cx < right_bound:
+                        cv2.rectangle(draw_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                        cv2.putText(draw_frame, "OVERTAKE TARGET", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        car_in_center = True
+                        
+        print("Car in center:", car_in_center)
+
+        # State Machine Transition
+        safe_to_trigger = not pedestrian_detected and not is_parking and not red_light
+        print(f"Safe to trigger: {safe_to_trigger} | Pedestrian: {pedestrian_detected} | Parking: {is_parking} | RedLight: {red_light}")
+
+        if self.state == 'OVERTAKE_IDLE':
+            if car_in_center and safe_to_trigger:
+                self.state = 'OVERTAKE_LEFT'
+                self.timer = time.time() + 2.0
+
+        elif self.state == 'OVERTAKE_LEFT':
+            if time.time() > self.timer:
+                self.state = 'OVERTAKE_STRAIGHT'
+                self.timer = time.time() + 2.0
+
+        elif self.state == 'OVERTAKE_STRAIGHT':
+            if time.time() > self.timer:
+                self.state = 'OVERTAKE_RIGHT'
+                self.timer = time.time() + 2.0
+
+        elif self.state == 'OVERTAKE_RIGHT':
+            if time.time() > self.timer:
+                self.state = 'OVERTAKE_IDLE'
+                
+        print("Overtake State:", self.state)
+                
+        # Steering Override Logic & Speed Reduction
+        overtake_steer = None
+        speed_mult = 1.0
+        
+        if self.state == 'OVERTAKE_LEFT':
+            overtake_steer = -25.0
+            speed_mult = 0.6
+        elif self.state == 'OVERTAKE_STRAIGHT':
+            overtake_steer = None
+            speed_mult = 1.0
+        elif self.state == 'OVERTAKE_RIGHT':
+            overtake_steer = 25.0
+            speed_mult = 0.6
+
+        return overtake_steer, speed_mult, self.state
+# --- OVERTAKE DEBUG FIX ---
 
 # ─────────────────────────────────────────────────────────────
 class BFMC_App:
@@ -146,10 +232,8 @@ class BFMC_App:
         self.path_signs = []
         self.visible_signs = {}
 
-        # Parking/Playback State
-        self.is_playing_back = False
-        self.is_parking_reverse_mode = False
-        self.playback_queue = []; self.playback_cmd = None; self.playback_frames = 0
+        # Parking State
+        # Playback logic removed
 
         # Autonomous Pipelines (Lane Detection)
         self.is_auto_mode    = False
@@ -167,6 +251,10 @@ class BFMC_App:
                 self.behavior = BehaviorController()
             except Exception as e:
                 print(f"[SYS] Warning: Failed to load AI models: {e}")
+
+        # --- HIGHWAY OVERTAKE START ---
+        self.overtake_manager = HighwayOvertakeManager()
+        # --- HIGHWAY OVERTAKE END ---
 
         # Bindings & Loops
         if not self.headless:
@@ -268,55 +356,8 @@ class BFMC_App:
             self.render_map()
 
     def execute_parking_playback(self, reverse=False):
-        """Reads default_parking.csv and enqueues commands. Handles steering inversion for reverse."""
-        filename = "default_parking.csv"
-        
-        if not os.path.exists(filename):
-            if not self.headless:
-                self.ui.log_event(f"Error: {filename} not found!", "WARN")
-            return
+        pass
 
-        commands = []
-        try:
-            with open(filename, 'r') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    commands.append({
-                        "speed": float(row.get("speed", 0.0)),
-                        "steer": float(row.get("steering", row.get("steer", 0))),
-                        "pwm": float(row.get("pwm", 0.0)),
-                        "direction": int(row.get("direction", 1)),
-                        "duration_fr": int(row.get("duration_fr", 1))
-                    })
-        except Exception as e:
-            if not self.headless:
-                self.ui.log_event(f"CSV Read Error: {e}", "DANGER")
-            return
-
-        self.playback_queue = []
-        
-        if reverse:
-            # Read backwards and invert math for reverse kinematics
-            for cmd in reversed(commands):
-                self.playback_queue.append({
-                    "speed": cmd["speed"],
-                    "steer": -cmd["steer"],   # Invert steering angle
-                    "pwm": cmd["pwm"],
-                    "direction": -1 if cmd["direction"] == 1 else 1, # Reverse direction
-                    "duration_fr": cmd["duration_fr"]
-                })
-            self.is_parking_reverse_mode = True
-        else:
-            self.playback_queue = commands
-            self.is_parking_reverse_mode = False
-
-        self.is_playing_back = True
-        self.is_auto_mode = False 
-        self.is_calibrating = False
-        
-        if not self.headless:
-            mode_str = "REVERSE" if reverse else "FORWARD"
-            self.ui.log_event(f"Starting {mode_str} parking playback...", "SUCCESS")
 
     def render_map(self):
         if self.headless: return
@@ -411,11 +452,11 @@ class BFMC_App:
                 "crosswalk": time.time() < self.crosswalk_timer,
                 "priority": time.time() < self.priority_timer,
                 "pedestrian": any(label.lower() in ["pedestrian", "person"] for label in ai_labels),
-                "parking": getattr(self, 'is_playing_back', False) or getattr(self, 'is_waiting_for_reverse', False)
+                "parking": False # parking playback removed
             }
             
             teleport_node = None
-            if not self.is_playing_back and not getattr(self, 'is_waiting_for_reverse', False):
+            if True:
                 active_sign_cmd, self.path_signs, teleport_node = self.map_engine.update_sign_statuses(
                     self.path_signs, ai_labels, ai_dist, detect_dist=detect_dist, act_dist=act_dist, light_status=light_status, active_blocks=self.active_blocks
                 )
@@ -449,12 +490,17 @@ class BFMC_App:
                 elif "priority" in active_sign_cmd.lower():
                     self.priority_timer = time.time() + 10.0
                 elif "park" in active_sign_cmd.lower():
-                    if not getattr(self, 'has_parked_here', False):
-                        self.execute_parking_playback(reverse=False)
-                        self.has_parked_here = True
-            
-            if not active_sign_cmd or "park" not in active_sign_cmd.lower():
-                self.has_parked_here = False
+                    self._park_slot, self._park_frame = detect_slot(frame)
+                    if self._park_slot == "LEFT":
+                        print("Left slot free")
+                    elif self._park_slot == "RIGHT":
+                        print("Right slot free")
+                    else:
+                        print("No slot detected")
+                else:
+                    self._park_slot = None
+            else:
+                self._park_slot = None
             # ------------------------------------
             
             if active_sign_cmd and not self.headless:
@@ -465,7 +511,7 @@ class BFMC_App:
                 self.last_logged_cmd = None
 
             # 5. Calculate Steering & Speed Control
-            if self.is_auto_mode and not self.is_playing_back:
+            if self.is_auto_mode:
                 if time.time() - self.auto_start_time > 5.0 and self.imu.is_calibrated:
                     self.is_calibrating = False
                     ctrl_out = self.controller.compute(lane_result, velocity_ms=max(self.current_speed / 1000.0, 0.0), base_speed=base_speed, dt=dt)
@@ -479,6 +525,13 @@ class BFMC_App:
                         # NOTE: If `active_sign_cmd` is active, it should ideally override here
                         target_speed = behav_out.speed_pwm
                         target_steer = behav_out.steer_deg
+
+                        # --- FINAL OVERTAKE CONTROL LOCK ---
+                        if getattr(self, '_overtake_active', False):
+                            # HARD OVERRIDE (no controller influence)
+                            target_steer = self.current_steer
+                            target_speed = target_speed   # already modified by multiplier
+                        # -----------------------------------
                         
                         # --- NEW SPEED MULTIPLIER AND IMMEDIATE OVERRIDE LOGIC ---
                         if active_sign_cmd and "highway" in active_sign_cmd.lower():
@@ -506,8 +559,51 @@ class BFMC_App:
                         if time.time() < self.priority_timer:
                             target_speed *= 0.8
                         if is_highway:
-                            target_speed *= 1.3
+                            target_speed *= 0.5
+                        if active_sign_cmd and "park" in active_sign_cmd.lower():
+                            target_speed *= 0.4
+                            if getattr(self, '_park_slot', None) == "LEFT":
+                                target_steer = -25.0
+                            elif getattr(self, '_park_slot', None) == "RIGHT":
+                                target_steer = 25.0
+                            else:
+                                target_steer = 0.0
                         # --------------------------------------------------------
+
+                        # --- OVERTAKE DEBUG FIX ---
+                        if self.in_highway_mode:
+                            draw_frame = t_res.yolo_debug_frame if (t_res and getattr(t_res, 'yolo_debug_frame', None) is not None) else frame
+                            dets = self.yolo.get_detections() if self.yolo else []
+                            
+                            overtake_res = self.overtake_manager.process(
+                                draw_frame, 
+                                dets,
+                                getattr(self, 'active_blocks', {}),
+                                getattr(t_res, 'light_status', 'NONE') if t_res else 'NONE'
+                            )
+                            if overtake_res:
+                                o_steer, o_speed_mult, o_state = overtake_res
+                                
+                                if o_state == 'OVERTAKE_LEFT' and getattr(self, '_last_overtake_state', 'OVERTAKE_IDLE') == 'OVERTAKE_IDLE':
+                                    if getattr(self, 'ui', None) and not self.headless:
+                                        self.ui.log_event("🚗 Overtaking started", "WARN")
+                                self._last_overtake_state = o_state
+                                
+                                if o_state != 'OVERTAKE_IDLE':
+                                    # --- HARD LOCK DURING OVERTAKE ---
+                                    self._overtake_active = True
+                                    if o_steer is not None:
+                                        target_steer = o_steer
+                                    else:
+                                        target_steer = 0.0  # Force go straight
+                                    target_speed *= o_speed_mult
+                                else:
+                                    self._overtake_active = False
+                        else:
+                            self.overtake_manager.state = 'OVERTAKE_IDLE'
+                            self._last_overtake_state = 'OVERTAKE_IDLE'
+                            self._overtake_active = False
+                        # --- OVERTAKE DEBUG FIX ---
                 else:
                     self.is_calibrating = True
                     target_speed, target_steer = 0.0, 0.0
@@ -546,66 +642,15 @@ class BFMC_App:
                     self.ui.bev_label.imgtk = ImageTk.PhotoImage(image=img_bev)
                     self.ui.bev_label.configure(image=self.ui.bev_label.imgtk)
 
-        # ── PARKING PLAYBACK OVERRIDE ─────────────────────────
-        if self.is_playing_back:
-            self.is_calibrating = False
-            
-            # If no current command is loaded or its duration is over, grab the next
-            if self.playback_cmd is None or self.playback_frames <= 0:
-                if self.playback_queue:
-                    self.playback_cmd = self.playback_queue.pop(0)
-                    self.playback_frames = self.playback_cmd.get("duration_fr", 1)
-                else:
-                    self.playback_cmd = None
-            
-            if self.playback_cmd:
-                self.playback_frames -= 1
-                cmd = self.playback_cmd
-                
-                # If PWM is available, use it directly with the direction multiplier.
-                # Otherwise, fallback on raw speed. 
-                # direction=1 (forward), direction=-1 (reverse)
-                dir_mult = cmd.get("direction", 1)
-                if dir_mult == 0: dir_mult = 1
-                
-                if cmd.get("pwm", 0) > 0:
-                    target_speed = cmd["pwm"] * dir_mult
-                else:
-                    target_speed = cmd["speed"] * dir_mult
-                    
-                target_steer = cmd["steer"]
-                
-                # Log parking playback once per second
-                if not getattr(self, '_last_park_log_time', 0) or time.time() - self._last_park_log_time > 1.0:
-                    self._last_park_log_time = time.time()
-                    if not self.headless:
-                        self.ui.log_event(f"🅿️ Parking Steer: {target_steer:.1f}° | Spd: {target_speed:.1f}", "INFO")
-            else:
-                is_finishing_reverse = self.is_parking_reverse_mode
-                self.is_playing_back = False
-                self.is_parking_reverse_mode = False
-                target_speed = 0.0
-                target_steer = 0.0
-                
-                if not is_finishing_reverse and hasattr(self.ui, 'chk_parking') and self.ui.chk_parking.get():
-                    self.is_waiting_for_reverse = True
-                    self.reverse_timer = time.time() + 10.0
-                    if not self.headless:
-                        self.ui.log_event("Parking reached. Waiting 10s for Auto-Reverse...", "WARN")
-                else:
-                    if not self.headless:
-                        self.ui.log_event("Parking sequence fully complete.", "SUCCESS")
-
-        elif getattr(self, 'is_waiting_for_reverse', False):
-            self.is_calibrating = False
-            target_speed = 0.0
-            target_steer = 0.0
-            if time.time() > self.reverse_timer:
-                self.is_waiting_for_reverse = False
-                self.execute_parking_playback(reverse=True)
+                if getattr(self, '_park_frame', None) is not None and active_sign_cmd and "park" in active_sign_cmd.lower():
+                    pf = cv2.cvtColor(self._park_frame, cv2.COLOR_BGR2RGB)
+                    img_pf = Image.fromarray(pf).resize((440, 330))
+                    if hasattr(self.ui, 'slot_label'):
+                        self.ui.slot_label.imgtk = ImageTk.PhotoImage(image=img_pf)
+                        self.ui.slot_label.configure(image=self.ui.slot_label.imgtk)
 
         # ── MANUAL OVERRIDES ──────────────────────────────────
-        elif not self.is_auto_mode:
+        if not self.is_auto_mode:
             self.is_calibrating = False
             target_speed = (base_speed  if self.keys['Up'] else (-base_speed if self.keys['Down'] else 0))
             target_steer = (-25 * steer_mult if self.keys['Left'] else (25 * steer_mult if self.keys['Right'] else 0))
@@ -616,10 +661,16 @@ class BFMC_App:
         else:
             self.current_speed += (target_speed - self.current_speed) * 0.2
 
-        if target_steer == 0:
-            self.current_steer = 0.0 
+        # --- FINAL OVERTAKE CONTROL LOCK ---
+        if getattr(self, '_overtake_active', False):
+            self.current_steer = target_steer
+            # DO NOT allow any smoothing or recalculation
         else:
-            self.current_steer += (target_steer - self.current_steer) * 0.2
+            if target_steer == 0:
+                self.current_steer = 0.0 
+            else:
+                self.current_steer += (target_steer - self.current_steer) * 0.2
+        # --- FINAL OVERTAKE CONTROL LOCK ---
 
         # ── HARDWARE OUTPUT ───────────────────────────────────
         if self.is_connected:
@@ -710,7 +761,6 @@ class BFMC_App:
             self.ui.lbl_hz.config(text=f"{self.current_hz:.1f} Hz", fg="cyan")
             
             mode_str = "AUTONOMOUS" if self.is_auto_mode else "MANUAL"
-            if self.is_playing_back: mode_str = "REVERSE PARKING" if self.is_parking_reverse_mode else "PARKING PLAYBACK"
             if self.is_calibrating: mode_str = "CALIBRATING..."
             
             self.ui.lbl_telemetry.config(
@@ -746,6 +796,12 @@ class BFMC_App:
                 if getattr(behav_out, 'parking_state', 'NONE') not in ('NONE', 'DONE'): active_keys.append('park')
                 if getattr(behav_out, 'state', '') == 'SYS_LANE_CHANGE_LEFT': active_keys.append('overtake')
                 if getattr(behav_out, 'zone_mode', '') == 'HIGHWAY': active_keys.append('highway')
+            
+            # --- OVERTAKE DEBUG FIX ---
+            if getattr(self, 'overtake_manager', None) and self.overtake_manager.state != 'OVERTAKE_IDLE':
+                if 'overtake' not in active_keys:
+                    active_keys.append('overtake')
+            # --- OVERTAKE DEBUG FIX ---
             
             self.ui.update_indicators(active_keys)
             # -------------------------
@@ -785,7 +841,7 @@ class BFMC_App:
             self.ui.log_event("🗑 Route & sign history cleared. Ready for new run.", "WARN")
 
     def _on_key_press(self, e):
-        if self.is_auto_mode or self.is_playing_back: return
+        if self.is_auto_mode: return
         if e.keysym in self.keys: self.keys[e.keysym] = True
 
     def _on_key_release(self, e):
