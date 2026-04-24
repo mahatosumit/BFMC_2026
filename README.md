@@ -81,7 +81,7 @@ BFMC_2026/
 ### 2. Python Dependencies
 Clone the repository and install the required packages:
 ```bash
-git clone https://github.com/Team-OPTINX/BFMC_2026.git
+git clone https://github.com/mahatosumit/BFMC_2026.git
 cd BFMC_2026
 pip install -r requirements.txt # Ensure numpy, opencv-python, onnxruntime, networkx, Pillow are installed
 ```
