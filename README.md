@@ -31,7 +31,7 @@ This project implements a complete autonomous driving stack on a 1:10 scale vehi
 ### Software Structure
 
 ```text
-BFMC_QUAL/
+BFMC_2026/
 ├── main.py                     # Primary entry point; sets up UI, connections, and runs the 20Hz control loop
 ├── config.py                   # Centralized configuration (dimensions, theme, model paths)
 ├── launch_all.sh               # Shell script to start the V2X servers and the main app
@@ -81,13 +81,13 @@ BFMC_QUAL/
 ### 2. Python Dependencies
 Clone the repository and install the required packages:
 ```bash
-git clone https://github.com/Team-OPTINX/BFMC_QUAL.git
-cd BFMC_QUAL
+git clone https://github.com/Team-OPTINX/BFMC_2026.git
+cd BFMC_2026
 pip install -r requirements.txt # Ensure numpy, opencv-python, onnxruntime, networkx, Pillow are installed
 ```
 
 ### 3. Model Setup
-Ensure your ONNX YOLOv8 model (`Niranjan.onnx` or equivalent) is located in the `assets/` directory as specified in `config.py`.
+Ensure your ONNX YOLOv8 model (`model.onnx` or equivalent) is located in the `assets/` directory as specified in `config.py`.
 
 ---
 
@@ -133,4 +133,4 @@ Once the application launches, the **Dashboard** gives you full control over the
 - **Safety**: Hardcoded stop thresholds for red lights, pedestrians, and stop signs seamlessly override baseline PID outputs.
 
 ---
-**Team OPTINX** | Ready for BFMC Qualification Round 2026.
+**Team OPTINX** | Ready for BFMC Final Round 2026.
