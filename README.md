@@ -1,58 +1,136 @@
-# BFMC 2026 – Autonomous Embedded Driving Platform
+# OPTINX BFMC 2026 – Autonomous Embedded Driving Platform
 
-**Team:** OPTINX  
-**Competition:** Bosch Future Mobility Challenge 2026  
-**Official Regulations:** [BFMC Documentation](https://bosch-future-mobility-challenge-competition-regulation.readthedocs-hosted.com/)
+[![Bosch Future Mobility Challenge](https://img.shields.io/badge/BFMC-2026-blue.svg)](https://bosch-future-mobility-challenge-competition-regulation.readthedocs-hosted.com/)
+[![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%7C%20STM32-lightgrey.svg)]()
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)]()
 
-**Video Link** [Qualification Phase(https://www.youtube.com/watch?v=7C7VOyQb-9U)]
+Welcome to **Team OPTINX**'s official repository for the **Bosch Future Mobility Challenge (BFMC) 2026**. 
+
+This project implements a complete autonomous driving stack on a 1:10 scale vehicle. It features real-time lane detection, traffic sign and obstacle recognition using a lightweight ONNX YOLOv8 model, and precise motor/steering control through an STM32 microcontroller. The software is specifically tailored for edge deployment on a **Raspberry Pi 5**, balancing embedded constraints with advanced ADAS capabilities.
 
 ---
 
-## 1. Project Overview
+## 🏎️ Key Features
 
-During the current reporting period, Team OPTINX focused on transitioning from initial system integration to a stable autonomous driving system in preparation for the BFMC Qualification Round. A key milestone was the successful integration of the perception pipeline running on a Raspberry Pi 5 with the low-level actuation system implemented on an STM32 microcontroller. This architecture enables real-time interpretation of camera inputs and generation of steering and speed commands.
+- **Hybrid Control System**: Run in fully manual (keyboard) mode, autonomous mode, or parking playback mode.
+- **Real-Time Computer Vision**: Accelerated Lane detection (adaptive thresholding + CLAHE + Perspective Transforms) running smoothly on a Raspberry Pi.
+- **Traffic Intelligence (AI)**: YOLOv8-ONNX based inference for recognizing traffic signs, traffic lights, and pedestrians. Integrated directly into the control pipeline for dynamic speed limits and halting.
+- **Map Engine & Digital Twin**: A Tkinter-based Dashboard that features a real-time digital twin of the vehicle. It loads the official `.graphml` track, maps V2X signs, and uses kinematics simulation/dead reckoning.
+- **V2X Communication**: Background servers for communicating with intelligent traffic lights and simulated vehicles.
+- **Hardware Agnostic**: Fallbacks to simulated input if the STM32 serial connection or IMU sensor isn't physically available.
 
-The primary objective of this phase was to achieve reliable lane keeping and consistent reactions to traffic elements. Extensive testing and parameter tuning were conducted to reduce steering oscillations, stabilize perception outputs, and minimize latency between perception and actuation. These improvements enabled the vehicle to complete repeated autonomous runs with stable trajectory tracking.
+---
 
-To support development and testing, a monitoring interface was implemented using a Tkinter-based dashboard. The interface visualizes perception outputs, telemetry data, and a digital twin of the vehicle state. The system includes a lightweight topological map engine capable of loading GraphML road graphs, computing node-to-node routes, and snapping the digital vehicle representation to valid track segments for accurate telemetry visualization and route monitoring. During experiments, the perception pipeline operates between 19 and 25 FPS, depending on scene complexity and lighting conditions.
+## 🏗️ Architecture
 
-## 2. Current Architecture & Perception Phase
+### Hardware
+* **High-Level Controller (Raspberry Pi 5)**: Handles image processing, AI inference, path planning, dashboard UI, and decision-making logic.
+* **Low-Level Controller (STM32)**: Handles hardware-level PWM generation for the steering servo and DC motor. Communicates with the Raspberry Pi over a USB-Serial connection. Captures real-time IMU telemetry.
+* **Sensors**: Standard CSI Camera (vision) and BNO055 IMU (orientation & heading).
 
-The system follows a distributed architecture in which perception and behavioral logic run on the Raspberry Pi 5, while the STM32 microcontroller executes deterministic control of steering and motor actuation.
+### Software Structure
 
-### Classical & Semantic Vision
-The lane detection pipeline processes frames from the CSI camera and converts them into a Bird’s Eye View representation. Lane markings are extracted using adaptive thresholding and tracked through a sliding-window polynomial fitting method to estimate lane curvature and centerline. Semantic perception is performed using a quantized YOLOv8 neural network optimized for real-time inference on the Raspberry Pi. The model detects traffic signs, pedestrians, vehicles, and traffic lights. 
+```text
+BFMC_QUAL/
+├── main.py                     # Primary entry point; sets up UI, connections, and runs the 20Hz control loop
+├── config.py                   # Centralized configuration (dimensions, theme, model paths)
+├── launch_all.sh               # Shell script to start the V2X servers and the main app
+├── README.md                   # This documentation file
+│
+├── dashboard/                  # UI and Digital Twin Module
+│   ├── dashboard_ui.py         # Tkinter layout, sliders, and log panel
+│   ├── map_engine.py           # Parses GraphML, pathfinding (A*/Dijkstra), sign placement
+│   └── adas_vision_utils.py    # BEV (Bird's Eye View) render utilities and junction logic
+│
+├── perception/                 # Computer Vision Pipeline
+│   ├── camera.py               # GStreamer/CSI camera stream handling
+│   ├── lane_detector.py        # Optical Flow + CLAHE based lane extraction
+│   ├── lane_tracker.py         # Hybrid Lane Tracker & Dead Reckoning
+│   └── perspective_transform.py# IPM (Inverse Perspective Mapping) utilities
+│
+├── traffic/                    # Semantic Understanding & Behavior
+│   ├── traffic_module.py       # YOLO ONNX Inference & Semantic Traffic logic
+│   └── behavior_controller.py  # High-level state machine (Highway, Intersection, Stop)
+│
+├── control/                    # Vehicle Control Loop
+│   └── controller.py           # Converts desired trajectory/lane target into Steering & PWM Speed
+│
+├── hardware/                   # Hardware Interfaces
+│   ├── serial_handler.py       # Threaded Serial communication with STM32
+│   └── imu_sensor.py           # Interface for Yaw, Pitch, Roll data
+│
+├── firmware_stm32/             # C++ Firmware for STM32 Microcontroller
+│   └── main.cpp                
+│
+├── v2x/                        # Vehicle-to-Everything
+│   └── v2x_client.py           # UDP Client for Traffic light statuses
+│
+├── servers/                    # V2X Infrastructure Servers (provided by BFMC)
+└── assets/                     # Models (ONNX), Maps (SVG/GraphML), and config files
+```
 
-To maintain responsiveness, YOLO inference runs asynchronously so that neural network processing does not block the main control loop. Detected signs are processed through a chronological state pipeline that organizes traffic elements along the active driving route. Each element transitions through defined states (`PENDING → DETECTING → ACTING → COMPLETED`), ensuring that traffic behaviors are executed only when the vehicle reaches the appropriate spatial context and preventing premature rule activation.
+---
 
-### Kinematic Control
-Vehicle control is handled through a Stanley Kinematic Controller that computes steering commands using cross-track error and heading deviation. Longitudinal speed control is governed by a rule-based traffic decision engine that adapts vehicle behavior to environmental conditions. The system differentiates between driving environments such as city and highway zones and applies dynamic speed multipliers to adjust the target velocity. During testing, the vehicle maintains approximately 20 PWM on standard road sections and 22 PWM on highway segments, ensuring stable navigation while preserving adequate reaction time for perception-driven decisions.
+## 🚀 Setup & Installation
 
-## 3. Autonomous Performance & Behaviors
+### 1. Prerequisites
+- **Raspberry Pi 5** running a Debian-based OS (e.g., Ubuntu or RPi OS 64-bit).
+- Python 3.10+
+- STM32 setup with the compiled firmware (`firmware_stm32/main.cpp`) flashed onto it.
 
-Significant progress was achieved in perception, control, and system integration. 
-- **Lane Trajectory:** Temporal smoothing using an Exponential Moving Average was introduced to stabilize polynomial lane estimates and reduce steering jitter. A fallback mechanism combining IMU-based dead reckoning and visual odometry was also implemented to maintain trajectory estimation when lane boundaries temporarily disappear.
-- **Stanley Controller Tuning:** Adjustments eliminated oscillatory steering behavior and enabled smooth convergence toward the lane center. A boundary protection mechanism was also implemented to prevent the vehicle from drifting toward track edges.
+### 2. Python Dependencies
+Clone the repository and install the required packages:
+```bash
+git clone https://github.com/Team-OPTINX/BFMC_QUAL.git
+cd BFMC_QUAL
+pip install -r requirements.txt # Ensure numpy, opencv-python, onnxruntime, networkx, Pillow are installed
+```
 
-### Validated Behaviors
-The vehicle demonstrates reliable lane keeping, performs **autonomous parking using a CSV-driven trajectory playback module**, stops when pedestrians are detected, and executes lane-change maneuvers when a vehicle obstacle is present ahead. The system was also evaluated on ramp sections and tunnel environments, maintaining stable perception and control despite variations in elevation and lighting conditions.
+### 3. Model Setup
+Ensure your ONNX YOLOv8 model (`Niranjan.onnx` or equivalent) is located in the `assets/` directory as specified in `config.py`.
 
-### Temporal FSM Overrides
-Additional behavioral constraints were introduced through time-based overrides within the control system. Certain semantic events such as crosswalks or priority zones **temporarily override standard control outputs, enforcing rule-compliant vehicle behavior during predefined time intervals.** System integration tasks were also completed to ensure reliable communication between hardware and software components. A Python daemon manages serial communication between the Raspberry Pi and STM32, while telemetry data including speed, steering angle, and system state are logged and transmitted through the BFMC network interface.
+---
 
-### Sustainability Considerations
-To reduce material waste during development, the experimental track used for testing was constructed primarily from repurposed laboratory materials. Existing boards and surfaces were refurbished and repainted to recreate BFMC lane markings.
+## 🎮 Usage 
 
-## 4. Encountered Issues & Mitigations
+To run the full stack including the V2X servers and the dashboard GUI:
+```bash
+./launch_all.sh
+```
 
-The most significant limitation was the computational load on the Raspberry Pi 5 when running both the lane detection pipeline and YOLO neural network simultaneously. This occasionally introduced latency spikes, which were mitigated through model quantization and asynchronous inference execution.
+To run only the main application (with GUI):
+```bash
+python3 main.py
+```
 
-- **Lighting Calibration:** Lighting variations initially affected lane segmentation accuracy. To improve robustness, camera exposure parameters are calibrated during system initialization and then locked during operation. 
-- **Deterministic Handshake:** Differences in processing frequency between the Pi and STM32 initially caused buffer overruns and delayed actuation. This issue was resolved by implementing a lightweight heartbeat synchronization protocol and improving the microcontroller command parser. 
-- **IMU Injection:** Steering stability was further improved by combining perception-based lane estimation with IMU yaw feedback, enabling smoother trajectory correction.
+### Command Line Arguments
+- `--headless`: Run without the Tkinter GUI (optimized for raw track performance).
+- `--no_v2x`: Disable V2X communication servers.
+- `--model PATH`: Override the default YOLO ONNX model path.
 
-## 5. Next Steps
+---
 
-The immediate priority is to perform repeated end-to-end validation runs to ensure stable lane keeping, reliable detection of traffic elements, and consistent autonomous operation. Following qualification, development will focus on improving behavioral robustness, refining intersection handling logic, and enhancing perception performance for dynamic obstacles such as pedestrians and moving vehicles. 
+## 🕹️ Control & Dashboard Interface
 
-Future work will also target improved object detection consistency, reduced perception latency, and the integration of visual mapping with dead-reckoning techniques to strengthen localization robustness.
+Once the application launches, the **Dashboard** gives you full control over the digital twin and physical car:
+
+1. **Connection**: Click `CONNECT CAR` to establish a serial link with the STM32.
+2. **Mode Toggle**: Switch between **MANUAL** and **AUTONOMOUS** mode.
+3. **Manual Controls**: 
+   - `Up/Down` Arrows: Throttle / Reverse
+   - `Left/Right` Arrows: Steering
+4. **Digital Map**: 
+   - *DRIVE Mode*: Click anywhere on the map nodes to teleport the digital twin.
+   - *NAV Mode*: Define a Start, Pass-through, and End node to visualize the planned trajectory.
+   - *SIGN Mode*: Add or Remove virtual traffic signs to test the AI reaction logic without physical signs.
+5. **ADAS Tools**: Toggle ADAS Assist to enable dynamic speed adjustments and emergency stopping.
+
+---
+
+## ⚙️ Development Highlights
+- **Performance**: The lane detection utilizes Visual Odometry (Optical Flow) to estimate yaw rates when lines are temporarily lost, keeping the vehicle stable.
+- **AI Efficiency**: Ported from PyTorch to **ONNX Runtime** for optimal CPU efficiency on the Raspberry Pi 5.
+- **Safety**: Hardcoded stop thresholds for red lights, pedestrians, and stop signs seamlessly override baseline PID outputs.
+
+---
+**Team OPTINX** | Ready for BFMC Qualification Round 2026.
