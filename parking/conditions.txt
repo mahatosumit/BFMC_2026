@@ -1,0 +1,527 @@
+# BFMC Autonomous Parking — Complete Testing Checklist
+
+This checklist is for validating your complete parking system step-by-step using:
+
+* Raspberry Pi Camera
+* BNO055 IMU
+* ONNX Model (Parking Sign + Car)
+* Parallel Parking Logic
+* CSV Reverse Trajectory
+
+**DO NOT directly start with full autonomous parking.**
+
+Test in stages.
+
+---
+
+# PHASE 0 — PRE-TEST HARDWARE CHECK
+
+## Goal
+
+Ensure hardware/software stack works.
+
+## Checklist
+
+### Raspberry Pi Camera
+
+Verify:
+
+* [ ] Camera opens successfully
+* [ ] Live feed visible
+* [ ] FPS stable
+* [ ] No frame freezing
+* [ ] Camera mounted correctly
+* [ ] Parking sign visible clearly
+* [ ] Parking slots visible in bottom quarter
+
+### BNO055 IMU
+
+Verify:
+
+* [ ] IMU initializes successfully
+* [ ] No I2C errors
+* [ ] Acceleration values changing
+* [ ] Forward axis confirmed
+* [ ] Correct acceleration axis selected
+
+Print values:
+
+```python
+print(accel_forward)
+```
+
+Move car manually forward.
+
+Expected:
+
+Positive acceleration.
+
+Backward:
+
+Negative acceleration.
+
+Turning should NOT heavily affect forward acceleration.
+
+### ONNX Model
+
+Verify:
+
+* [ ] Model loads successfully
+* [ ] No inference crash
+* [ ] Parking sign class detected
+* [ ] Car class detected
+
+Expected terminal:
+
+```python
+[Parking] ONNX model loaded
+```
+
+### CSV Files
+
+Verify existence:
+
+* [ ] left_parallel_parking.csv
+* [ ] right_parallel_parking.csv
+
+Verify format:
+
+```csv
+time,steering,speed
+0.0,15,0.2
+0.1,15,0.2
+0.2,-10,-0.15
+```
+
+---
+
+# PHASE 1 — PARKING SIGN DETECTION TEST
+
+## Goal
+
+Verify parking starts correctly.
+
+### Setup
+
+Car stationary.
+
+Show parking sign to camera.
+
+### Expected Behavior
+
+Before sign:
+
+```python
+state = 0
+speed_multiplier = 1.0
+```
+
+After 3 consecutive detections:
+
+Expected logs:
+
+```python
+[Parking] Sign detected
+[Parking] ROI activated
+```
+
+Expected:
+
+* [ ] State changes to parking mode
+* [ ] IMU reset happens
+* [ ] Speed multiplier becomes 0.30
+* [ ] ROI becomes active
+
+Verify:
+
+```python
+print(output)
+```
+
+Expected:
+
+```python
+speed_multiplier = 0.30
+```
+
+FAIL CONDITIONS:
+
+* Parking triggers without sign
+* False positive sign detection
+* Parking activates too early
+
+---
+
+# PHASE 2 — ROI VALIDATION TEST
+
+## Goal
+
+Verify only bottom quarter is active.
+
+### Setup
+
+Place toy/object in:
+
+1. Upper region
+2. Bottom region
+
+### Expected
+
+Upper frame:
+
+NO detection.
+
+Bottom quarter:
+
+Detection.
+
+Checklist:
+
+* [ ] Top ignored
+* [ ] Bottom quarter active
+* [ ] ROI stable
+* [ ] No false detections outside ROI
+
+---
+
+# PHASE 3 — LEFT/RIGHT SPLIT TEST
+
+## Goal
+
+Verify side classification.
+
+### Setup
+
+Place toy car:
+
+1. Left parking side
+2. Right parking side
+3. Both sides
+
+### Expected
+
+#### Left only
+
+```python
+left occupied
+right free
+selected side → RIGHT
+```
+
+#### Right only
+
+```python
+left free
+right occupied
+selected side → LEFT
+```
+
+#### Both occupied
+
+```python
+skip slot
+```
+
+#### Both free
+
+```python
+selected side → RIGHT
+```
+
+Checklist:
+
+* [ ] Left detection correct
+* [ ] Right detection correct
+* [ ] Both occupied handled
+* [ ] Right priority works
+
+---
+
+# PHASE 4 — SLOT COUNTING TEST
+
+## Goal
+
+Verify IMU slot tracking.
+
+### Setup
+
+Move slowly.
+
+Print:
+
+```python
+print(distance_cm)
+print(current_slot)
+```
+
+### Expected
+
+| Distance   | Slot |
+| ---------- | ---- |
+| 0–50 cm    | 1    |
+| 50–100 cm  | 2    |
+| 100–150 cm | 3    |
+| 150–200 cm | 4    |
+| 200–250 cm | 5    |
+
+Checklist:
+
+* [ ] Slot increment correct
+* [ ] No jumping slots
+* [ ] No drift explosion
+* [ ] Distance stable
+
+FAIL CONDITIONS:
+
+* Distance increasing when stopped
+* Slot changing while stationary
+* Turning causing distance spike
+
+If drift happens:
+
+Tune:
+
+```python
+IMU_DEADBAND
+VELOCITY_DAMPING
+```
+
+---
+
+# PHASE 5 — PARKING DECISION TEST
+
+## Goal
+
+Verify target slot selection.
+
+### Scenario 1
+
+Slot 1 free.
+
+Expected:
+
+```python
+selected_slot = 1
+stop_distance = 100 cm
+```
+
+### Scenario 2
+
+Slot 2 free.
+
+Expected:
+
+```python
+selected_slot = 2
+stop_distance = 150 cm
+```
+
+### Scenario 3
+
+Both occupied.
+
+Expected:
+
+```python
+skip slot
+```
+
+### Scenario 4
+
+Both free.
+
+Expected:
+
+```python
+RIGHT selected
+```
+
+Checklist:
+
+* [ ] Slot chosen correctly
+* [ ] Side chosen correctly
+* [ ] Slot skip works
+* [ ] Right priority works
+
+---
+
+# PHASE 6 — STOP DISTANCE TEST
+
+## Goal
+
+Verify stop point.
+
+### Expected Distances
+
+| Free Slot | Stop Distance |
+| --------- | ------------- |
+| 1         | ~100 cm       |
+| 2         | ~150 cm       |
+| 3         | ~200 cm       |
+| 4         | ~250 cm       |
+| 5         | ~250 cm       |
+
+Tolerance:
+
+±10 cm acceptable initially.
+
+Checklist:
+
+* [ ] Stops near target
+* [ ] No overshoot
+* [ ] No premature stop
+
+---
+
+# PHASE 7 — CSV TRAJECTORY TEST
+
+## Goal
+
+Verify parking path loads.
+
+Disable steering control.
+
+Only test:
+
+```python
+trajectory != None
+```
+
+Expected:
+
+```python
+[Parking] CSV loaded
+[Parking] Reverse parking started
+```
+
+Checklist:
+
+* [ ] Right CSV loaded
+* [ ] Left CSV loaded
+* [ ] Trajectory valid
+* [ ] No parsing errors
+
+---
+
+# PHASE 8 — DRY RUN REVERSE PARKING
+
+## Goal
+
+Test reverse logic slowly.
+
+Speed:
+
+30% only.
+
+Checklist:
+
+* [ ] Steering direction correct
+* [ ] Reverse path correct
+* [ ] No wall collision
+* [ ] Timeout not triggered
+
+Emergency stop ready.
+
+---
+
+# PHASE 9 — FULL PARKING TEST
+
+## Goal
+
+Complete parking.
+
+Scenario tests:
+
+### Test A
+
+Left occupied.
+
+Expected:
+
+Park RIGHT.
+
+### Test B
+
+Right occupied.
+
+Expected:
+
+Park LEFT.
+
+### Test C
+
+Both occupied.
+
+Expected:
+
+Skip slot.
+
+### Test D
+
+Both free.
+
+Expected:
+
+RIGHT priority.
+
+Checklist:
+
+* [ ] Sign detected
+* [ ] Speed reduced
+* [ ] IMU reset
+* [ ] ROI active
+* [ ] Cars detected
+* [ ] Slot chosen
+* [ ] Stop correct
+* [ ] CSV loaded
+* [ ] Reverse works
+* [ ] Parking completed
+
+---
+
+# DEBUG PRINTS TO KEEP ENABLED
+
+Keep this during testing:
+
+```python
+print(
+    f"State:{state} | "
+    f"Distance:{distance_cm:.2f} | "
+    f"Slot:{current_slot} | "
+    f"Selected:{selected_slot} | "
+    f"Side:{selected_side}"
+)
+```
+
+---
+
+# EXPECTED FIRST FAILURES
+
+Most likely issues in real BFMC test:
+
+1. IMU drift
+2. Wrong acceleration axis
+3. Weak parking sign detection
+4. ROI false detections
+5. Stop distance overshoot
+6. Wrong slot counting
+
+These are tuning problems, not architecture problems.
+
+---
+
+# IMPORTANT SAFETY RULES
+
+For first live test:
+
+* [ ] Keep emergency stop ready
+* [ ] Test at very low speed
+* [ ] Disable reverse parking first
+* [ ] Test until CSV load only
+* [ ] Enable reverse after stop distance validated
+* [ ] Keep open space around car
+* [ ] Record video for debugging
+
+Only after stop distance becomes reliable:
+
+Enable full reverse parking.

@@ -1,0 +1,10 @@
+{
+  "roll_src": "roll",
+  "roll_sign": 1,
+  "pitch_src": "pitch",
+  "pitch_sign": 1,
+  "yaw_src": "yaw",
+  "yaw_sign": 1,
+  "accel_fwd_src": "y",
+  "accel_fwd_sign": 1
+}
