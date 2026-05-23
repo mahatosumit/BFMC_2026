@@ -7,3 +7,4 @@ logs/
 hi.txt
 .vscode/
 .claude/
+.DS_Store
