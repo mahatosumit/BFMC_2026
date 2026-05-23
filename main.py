@@ -2,7 +2,6 @@ import tkinter as tk
 from tkinter import messagebox
 import time
 import math
-import numpy as np
 import cv2
 import csv
 import json
@@ -21,11 +20,16 @@ from dashboard.adas_vision_utils import annotate_bev, JunctionDetector, Roundabo
 from core.telemetry import TelemetryLogger
 
 try:
+    from parking.parking import ParkingSystem
+except ImportError:
+    ParkingSystem = None
+
+try:
+    # pyrefly: ignore [missing-import]
     from dashboard.web_dashboard import WebDashboard
     _WEB_AVAILABLE = True
 except ImportError:
     _WEB_AVAILABLE = False
-
 try:
     from hardware.serial_handler import STM32_SerialHandler
 except ImportError:
@@ -136,8 +140,16 @@ class BFMC_App:
         if not args.no_v2x:
             self.v2x_client.start()
 
-        # Physics State
-        self.car_x, self.car_y, self.car_yaw = 0.5, 0.5, 0.0
+        # Physics State — place car at first graph node so it starts on the map
+        if self.map_engine.G.nodes:
+            _n0 = next(iter(self.map_engine.G.nodes))
+            _d0 = self.map_engine.G.nodes[_n0]
+            self.car_x = float(_d0.get('x', 4.17))
+            self.car_y = float(_d0.get('y', 6.89))
+        else:
+            self.car_x, self.car_y = 4.17, 6.89
+        self.car_yaw = 0.0
+        self.car_speed_ms = 0.0          # velocity integrated from IMU accel (m/s)
         self.current_speed, self.current_steer = 0.0, 0.0
         self.keys = {'Up': False, 'Down': False, 'Left': False, 'Right': False}
         self.last_ctrl_time = time.time()
@@ -166,6 +178,11 @@ class BFMC_App:
         self.is_playing_back = False
         self.is_parking_reverse_mode = False
         self.playback_queue = []; self.playback_cmd = None; self.playback_frames = 0
+        
+        if ParkingSystem is not None:
+            self.parking_system = ParkingSystem(debug_dashboard=False)
+        else:
+            self.parking_system = None
 
         # Autonomous Pipelines (Lane Detection)
         self.is_auto_mode    = False
@@ -187,12 +204,6 @@ class BFMC_App:
         # Telemetry logger (always on — writes to logs/)
         self.telemetry = TelemetryLogger()
 
-        # Web dashboard (opt-in via --web flag)
-        self.web: "WebDashboard | None" = None
-        if getattr(args, "web", False) and _WEB_AVAILABLE:
-            self.web = WebDashboard()
-            self.web.start()
-
         # Bindings & Loops
         if not self.headless:
             self.root.bind("<KeyPress>", self._on_key_press)
@@ -201,7 +212,12 @@ class BFMC_App:
             self.ui.map_canvas.bind("<Button-1>", self.on_map_click)       # Left Click
 
         self.set_mode("DRIVE")
-        self.control_loop()
+        if self.headless:
+            while True:
+                self.control_loop()
+                time.sleep(0.05)
+        else:
+            self.control_loop()
 
         if not self.headless:
             self.render_map()
@@ -313,9 +329,10 @@ class BFMC_App:
                 
             if self.start_node and self.end_node:
                 self.path = self.map_engine.calc_path_nodes(self.start_node, self.end_node, self.pass_nodes)
-                # Pull ONLY the signs that are on this newly calculated path
                 self.path_signs = self.map_engine.get_path_signs(self.path)
-                self.ui.log_event(f"Path Calculated. {len(self.path_signs)} signs on route.", "SUCCESS")
+                self.ui.log_event(f"Path Calculated: {len(self.path)} nodes, {len(self.path_signs)} signs.", "SUCCESS")
+                # Auto-calibrate: snap car to start node + align heading to first segment
+                self.calibrate_to_start()
             self.render_map()
 
         elif self.mode == "SIGN":
@@ -390,18 +407,37 @@ class BFMC_App:
             self.ui.log_event(f"Starting {mode_str} parking playback...", "SUCCESS")
 
     def render_map(self):
-        if self.headless: return
         pil = self.map_engine.render_map(
             self.car_x, self.car_y, self.car_yaw,
             self.path, self.visited_path_nodes, self.path_signs,
             True, self.start_node, self.pass_nodes, self.end_node
         )
+        if self.headless:
+            return
         self.tk_map = ImageTk.PhotoImage(pil)
         self.ui.map_canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_map)
         self.ui.map_canvas.config(scrollregion=self.ui.map_canvas.bbox(tk.ALL))
 
     def on_parking_toggle(self):
         pass
+
+    def toggle_parking_dashboard(self):
+        self.parking_dashboard_open = not getattr(self, 'parking_dashboard_open', False)
+        print("[Parking Dashboard] Button Clicked")
+        print(f"[Parking Dashboard] state: {self.parking_dashboard_open}")
+        
+        if not self.headless:
+            if self.parking_dashboard_open:
+                self.ui.btn_park_dash.config(text="🅿 ACTIVE", fg="#00ff00")
+                self.ui.log_event("🅿 Parking Dashboard OPENED", "INFO")
+            else:
+                self.ui.btn_park_dash.config(text="🅿 OFF", fg="white")
+                self.ui.log_event("🅿 Parking Dashboard CLOSED", "INFO")
+                # Attempt to close the OpenCV window gracefully
+                try:
+                    cv2.destroyWindow("BFMC Parking Dashboard")
+                except:
+                    pass
 
     def toggle_connection(self):
         if not self.is_connected:
@@ -450,10 +486,19 @@ class BFMC_App:
         
         # 1. Grab Frame
         frame = self.camera.read_frame()
+        
+        if getattr(self, 'parking_dashboard_open', False):
+            try:
+                if self.parking_system:
+                    self.parking_system.render_dashboard(frame)
+            except Exception as e:
+                print(f"[Dashboard Error] {e}")
+
         lane_result = None
         t_res = None
         behav_out = None
         active_sign_cmd = None
+        ai_labels = []
 
         if frame is not None and self.detector and self.controller:
             # 2. Process Lane Detection
@@ -470,6 +515,49 @@ class BFMC_App:
                 t_res = self.traffic_engine.process(frame, line_type)
                 if t_res and hasattr(t_res, 'active_labels'):
                     ai_labels = t_res.active_labels
+            
+            # --- PARKING SYSTEM UPDATE ---
+            parking_out = None
+            if self.parking_system:
+                try:
+                    real_imu = {
+                        "accel_x": getattr(self.imu, 'get_accel_x', lambda: 0.0)(),
+                        "accel_y": getattr(self.imu, 'get_accel_y', lambda: 0.0)(),
+                        "accel_forward": getattr(self.imu, 'get_accel_forward', lambda: 0.0)(),
+                        "gyro_x": getattr(self.imu, 'get_gyro_x', lambda: 0.0)(),
+                        "gyro_y": getattr(self.imu, 'get_gyro_y', lambda: 0.0)(),
+                        "gyro_z": getattr(self.imu, 'get_gyro_z', lambda: 0.0)(),
+                        "roll": self.imu.get_roll() if hasattr(self.imu, 'get_roll') else 0.0,
+                        "pitch": self.imu.get_pitch() if hasattr(self.imu, 'get_pitch') else 0.0,
+                        "yaw": self.imu.get_yaw() if hasattr(self.imu, 'get_yaw') else 0.0
+                    }
+                    
+                    pedestrian_detected = any(label.lower() in ["pedestrian", "person"] for label in ai_labels)
+                    reverse_parking_done = not self.is_playing_back and not getattr(self, 'is_waiting_for_reverse', False)
+                    
+                    parking_out = self.parking_system.update(
+                        frame=frame,
+                        dt=dt,
+                        real_imu=real_imu,
+                        current_speed=self.current_speed,
+                        reverse_parking_done=reverse_parking_done,
+                        autonomous_mode=self.is_auto_mode,
+                        pedestrian_detected=pedestrian_detected
+                    )
+                except Exception as e:
+                    print(f"[Parking Runtime Error] {e}")
+                    parking_out = {
+                        "parking_completed": False,
+                        "parking_failed": False,
+                        "selected_slot": None,
+                        "selected_side": None,
+                        "occupancy_status": {},
+                        "trajectory": None,
+                        "speed_multiplier": 1.0,
+                        "parking_mode_active": False,
+                        "parking_takeover": False
+                    }
+            # -----------------------------
             
             # 4. Update Path Sign States (Distance + AI Vision)
             detect_dist = float(self.ui.slider_sign_detect.get() if not self.headless else 5.0)
@@ -519,14 +607,16 @@ class BFMC_App:
                     self.crosswalk_timer = time.time() + CROSSWALK_HOLD_S
                 elif "priority" in active_sign_cmd.lower():
                     self.priority_timer = time.time() + PRIORITY_HOLD_S
-                elif "park" in active_sign_cmd.lower():
-                    if not getattr(self, 'has_parked_here', False):
-                        self.execute_parking_playback(reverse=False)
-                        self.has_parked_here = True
-            
-            if not active_sign_cmd or "park" not in active_sign_cmd.lower():
-                self.has_parked_here = False
             # ------------------------------------
+            
+            if parking_out and parking_out.get("parking_takeover"):
+                if not self.is_playing_back and parking_out.get("trajectory"):
+                    # Use the trajectory directly
+                    self.playback_queue = parking_out["trajectory"].copy()
+                    self.is_playing_back = True
+                    self.is_parking_reverse_mode = True
+                    if not self.headless:
+                        self.ui.log_event("🅿️ Parking Takeover Active: Loading Trajectory", "WARN")
             
             if active_sign_cmd and not self.headless:
                 if active_sign_cmd != self.last_logged_cmd:
@@ -585,79 +675,100 @@ class BFMC_App:
                             target_speed *= PRIORITY_SPEED_MULT
                         if is_highway:
                             target_speed *= HIGHWAY_SPEED_MULT
+                            
+                        # Background Parking Observer
+                        if parking_out and not parking_out.get("parking_takeover"):
+                            target_speed *= parking_out.get("speed_multiplier", 1.0)
                         # --------------------------------------------------------
                 else:
                     self.is_calibrating = True
                     target_speed, target_steer = 0.0, 0.0
                     
-            # 6. Dashboard CAM + BEV Render
-            if not self.headless:
-                final_cam = t_res.yolo_debug_frame if (t_res and getattr(t_res, 'yolo_debug_frame', None) is not None) else frame
-                final_cam = cv2.cvtColor(final_cam, cv2.COLOR_BGR2RGB)
-                img = Image.fromarray(final_cam).resize((440, 330))
-                self.ui.cam_label.imgtk = ImageTk.PhotoImage(image=img)
-                self.ui.cam_label.configure(image=self.ui.cam_label.imgtk)
 
-                if hasattr(lane_result, 'lane_dbg'):
-                    dbg = lane_result.lane_dbg.copy()
+        # ── CAMERA FEED (always render when frame available) ──────
+        if not self.headless and frame is not None:
+            final_cam = (t_res.yolo_debug_frame
+                         if (t_res and getattr(t_res, 'yolo_debug_frame', None) is not None)
+                         else frame)
+            final_cam_rgb = cv2.cvtColor(final_cam, cv2.COLOR_BGR2RGB)
+            _cw = self.ui.cam_label.winfo_width()
+            _ch = self.ui.cam_label.winfo_height()
+            if _cw <= 10 or _ch <= 10:
+                _cw, _ch = 320, 240
+            img = Image.fromarray(final_cam_rgb).resize((_cw, _ch))
+            self.ui.cam_label.imgtk = ImageTk.PhotoImage(image=img)
+            self.ui.cam_label.configure(image=self.ui.cam_label.imgtk)
 
-                    cv2.putText(dbg, lane_result.anchor, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-                    cv2.putText(dbg, f"Target X: {lane_result.target_x:.1f}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                    cv2.putText(dbg, f"Lat Error: {lane_result.lateral_error_px:+.1f}px", (10, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
-                    
-                    steer_color = (100,255,100) if abs(self.current_steer)<15 else (100,100,255)
-                    cv2.putText(dbg, f"STEER: {self.current_steer:+.1f} deg", (420, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, steer_color, 2)
-                    cv2.putText(dbg, f"SPEED: {self.current_speed:.0f} PWM", (420, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 2)
-                    
-                    if t_res is not None and behav_out is not None:
-                        cv2.putText(dbg, f"STATE: {behav_out.state}", (420, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-                        cv2.putText(dbg, f"ZONE: {behav_out.zone_mode}", (420, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 100, 255), 2)
-                        y_offset = 120
-                        if ai_labels:
-                            cv2.putText(dbg, "YOLO Detections:", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                            for label in ai_labels:
-                                cv2.putText(dbg, f"- {label}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
-                                y_offset += 20
-
-                    bev = cv2.cvtColor(dbg, cv2.COLOR_BGR2RGB)
-                    img_bev = Image.fromarray(bev).resize((440, 330))
-                    self.ui.bev_label.imgtk = ImageTk.PhotoImage(image=img_bev)
-                    self.ui.bev_label.configure(image=self.ui.bev_label.imgtk)
+        # ── BEV (render when lane detection has a result) ─────────
+        if not self.headless and lane_result is not None and hasattr(lane_result, 'lane_dbg') and lane_result.lane_dbg is not None:
+            dbg = lane_result.lane_dbg.copy()
+            cv2.putText(dbg, lane_result.anchor, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            cv2.putText(dbg, f"Target X: {lane_result.target_x:.1f}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            cv2.putText(dbg, f"Lat Error: {lane_result.lateral_error_px:+.1f}px", (10, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
+            steer_color = (100, 255, 100) if abs(self.current_steer) < 15 else (100, 100, 255)
+            cv2.putText(dbg, f"STEER: {self.current_steer:+.1f} deg", (420, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, steer_color, 2)
+            cv2.putText(dbg, f"SPEED: {self.current_speed:.0f} PWM", (420, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 2)
+            if t_res is not None and behav_out is not None:
+                cv2.putText(dbg, f"STATE: {behav_out.state}", (420, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+                cv2.putText(dbg, f"ZONE: {behav_out.zone_mode}", (420, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 100, 255), 2)
+                y_offset = 120
+                if ai_labels:
+                    cv2.putText(dbg, "YOLO:", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    for label in ai_labels:
+                        cv2.putText(dbg, f"- {label}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+                        y_offset += 20
+            bev_rgb = cv2.cvtColor(dbg, cv2.COLOR_BGR2RGB)
+            _bw = self.ui.bev_label.winfo_width()
+            _bh = self.ui.bev_label.winfo_height()
+            if _bw <= 10 or _bh <= 10:
+                _bw, _bh = 320, 240
+            img_bev = Image.fromarray(bev_rgb).resize((_bw, _bh))
+            self.ui.bev_label.imgtk = ImageTk.PhotoImage(image=img_bev)
+            self.ui.bev_label.configure(image=self.ui.bev_label.imgtk)
 
         # ── PARKING PLAYBACK OVERRIDE ─────────────────────────
         if self.is_playing_back:
             self.is_calibrating = False
-            
+
             # If no current command is loaded or its duration is over, grab the next
             if self.playback_cmd is None or self.playback_frames <= 0:
                 if self.playback_queue:
-                    self.playback_cmd = self.playback_queue.pop(0)
-                    self.playback_frames = self.playback_cmd.get("duration_fr", 1)
+                    if not any(label.lower() in ["pedestrian", "person"] for label in ai_labels):
+                        self.playback_cmd = self.playback_queue.pop(0)
+                        self.playback_frames = self.playback_cmd.get("duration_fr", 1)
                 else:
                     self.playback_cmd = None
-            
+
             if self.playback_cmd:
-                self.playback_frames -= 1
+                # Only decrement frames if no pedestrian
+                is_pedestrian = any(label.lower() in ["pedestrian", "person"] for label in ai_labels)
+                if not is_pedestrian:
+                    self.playback_frames -= 1
+
                 cmd = self.playback_cmd
-                
-                # If PWM is available, use it directly with the direction multiplier.
-                # Otherwise, fallback on raw speed. 
+
                 # direction=1 (forward), direction=-1 (reverse)
                 dir_mult = cmd.get("direction", 1)
                 if dir_mult == 0: dir_mult = 1
-                
+
                 if cmd.get("pwm", 0) > 0:
                     target_speed = cmd["pwm"] * dir_mult
                 else:
                     target_speed = cmd["speed"] * dir_mult
-                    
-                target_steer = cmd["steer"]
-                
+
+                # Apply steering from trajectory ("steer" key; fall back to "steering")
+                target_steer = cmd.get("steer", cmd.get("steering", 0.0))
+
+                if is_pedestrian:
+                    target_speed = 0.0  # Force stop for pedestrian
+                    target_steer = 0.0
+
                 # Log parking playback once per second
                 if not getattr(self, '_last_park_log_time', 0) or time.time() - self._last_park_log_time > 1.0:
                     self._last_park_log_time = time.time()
+                    dir_str = "REV" if dir_mult < 0 else "FWD"
                     if not self.headless:
-                        self.ui.log_event(f"🅿️ Parking Steer: {target_steer:.1f}° | Spd: {target_speed:.1f}", "INFO")
+                        self.ui.log_event(f"🅿️ [{dir_str}] Steer: {target_steer:.1f}° | Spd: {target_speed:.1f}", "INFO")
             else:
                 is_finishing_reverse = self.is_parking_reverse_mode
                 self.is_playing_back = False
@@ -717,72 +828,48 @@ class BFMC_App:
             speed=self.current_speed
         )
 
-        # ── KINEMATICS SIMULATION (Map update) ────────────────
-        if abs(self.current_speed) < 1:  self.current_speed = 0
-        if abs(self.current_steer) < 0.5: self.current_steer = 0
-
+        # ── KINEMATICS: commanded speed + IMU heading, free movement ──
         sim_mult = float(self.ui.slider_sim_speed.get() if not self.headless else 1.0)
-        v_ms = (self.current_speed / 1000.0) * sim_mult * 1.5
-        
-        # --- NEW MAGNETIC PATH SNAP LOGIC ---
-        if self.path and len(self.path) > 1:
-            # Check if this is a fresh start to reset path distance
-            path_tuple = tuple(self.path)
-            if self.last_path_tuple != path_tuple:
-                self.last_path_tuple = path_tuple
-                self.path_distance = 0.0
-                
-            self.path_distance += v_ms * dt
-            # Constrain distance
-            if self.path_distance < 0: self.path_distance = 0
-            
-            # Find the segment currently at `self.path_distance`
-            acc_dist = 0.0
-            found_segment = False
-            for i in range(len(self.path) - 1):
-                n1 = str(self.path[i])
-                n2 = str(self.path[i+1])
-                
-                if n1 not in self.map_engine.G.nodes or n2 not in self.map_engine.G.nodes:
-                    continue
-                    
-                x1, y1 = float(self.map_engine.G.nodes[n1].get('x', 0)), float(self.map_engine.G.nodes[n1].get('y', 0))
-                x2, y2 = float(self.map_engine.G.nodes[n2].get('x', 0)), float(self.map_engine.G.nodes[n2].get('y', 0))
-                
-                seg_len = math.hypot(x2 - x1, y2 - y1)
-                
-                if self.path_distance <= acc_dist + seg_len:
-                    # Car is within this segment
-                    ratio = (self.path_distance - acc_dist) / seg_len if seg_len > 0 else 0
-                    self.car_x = x1 + ratio * (x2 - x1)
-                    self.car_y = y1 + ratio * (y2 - y1)
-                    self.car_yaw = math.atan2(y2 - y1, x2 - x1)
-                    found_segment = True
-                    self.visited_path_nodes.add(n1)
-                    break
-                    
-                acc_dist += seg_len
-            
-            if not found_segment:
-                # Car has reached the end of the path
-                n_end = str(self.path[-1])
-                if n_end in self.map_engine.G.nodes:
-                    self.car_x = float(self.map_engine.G.nodes[n_end].get('x', 0))
-                    self.car_y = float(self.map_engine.G.nodes[n_end].get('y', 0))
-                self.current_speed = 0.0 # Force stop at end of path
-        else:
-            # Fallback unconstrained kinematics if no map path is active
-            steer_rad = math.radians(self.current_steer)
-            self.car_yaw -= (v_ms / max(WHEELBASE_M, 0.01)) * math.tan(steer_rad) * dt
-            self.car_yaw  = (self.car_yaw + math.pi) % (2 * math.pi) - math.pi
-            self.car_x   += v_ms * math.cos(self.car_yaw) * dt
-            self.car_y   += v_ms * math.sin(self.car_yaw) * dt
-            self.path_distance = 0.0
-            self.last_path_tuple = None
-        # ------------------------------------------------------
+
+        # Heading: calibrated path angle ± IMU delta since calibration.
+        # MAP_YAW_SIGN in config.py controls rotation direction on the map.
+        imu_now_deg  = self.imu.get_yaw()
+        calib_imu    = getattr(self, '_calib_imu_yaw',  imu_now_deg)
+        calib_path   = getattr(self, '_calib_path_yaw', math.radians(imu_now_deg))
+        self.car_yaw = calib_path - MAP_YAW_SIGN * math.radians(imu_now_deg - calib_imu)
+
+        # Speed directly from commanded PWM — no IMU acceleration integration.
+        self.car_speed_ms = self.current_speed / 1000.0
+        v_ms = self.car_speed_ms * sim_mult
+
+        # Integrate position — unconstrained, car can move off the planned path
+        self.car_x += v_ms * math.cos(self.car_yaw) * dt
+        self.car_y += v_ms * math.sin(self.car_yaw) * dt
+
+        # Mark planned-path nodes as visited when car passes within 0.5 m
+        if self.path:
+            for n in self.path:
+                nd = self.map_engine.G.nodes.get(str(n))
+                if nd and math.hypot(self.car_x - float(nd.get('x', 0)),
+                                     self.car_y - float(nd.get('y', 0))) < 0.5:
+                    self.visited_path_nodes.add(str(n))
+
+        # Sign list:
+        #  • Path planned  → list was set by get_path_signs() at planning time;
+        #    update_sign_statuses() keeps it current — nothing to rebuild here.
+        #  • No path       → BFS 3 hops forward from nearest node, rebuilt every
+        #    frame with status preserved from the previous frame.
+        if not self.path:
+            _hops        = int(self.ui.slider_sign_hops.get() if not self.headless else SIGN_SCAN_HOPS_DEFAULT)
+            _nearby      = self.map_engine.get_nearby_signs(self.car_x, self.car_y, self.car_yaw, max_hops=_hops)
+            _prev_status = {str(s['node']): s.get('status', '⏳ PENDING') for s in self.path_signs}
+            for s in _nearby:
+                s['status'] = _prev_status.get(str(s['node']), '⏳ PENDING')
+            self.path_signs = _nearby
+        # ─────────────────────────────────────────────────────────
 
         # ── TELEMETRY LOG (rate-limited to 1 Hz, non-blocking) ──
-        yolo_labels_str = ", ".join(ai_labels) if 'ai_labels' in dir() and ai_labels else ""
+        yolo_labels_str = ", ".join(ai_labels) if ai_labels else ""
         self.telemetry.log(
             loop_hz     = f"{1.0/dt:.1f}" if dt > 0 else "0",
             mode        = "AUTO" if self.is_auto_mode else "MANUAL",
@@ -805,80 +892,42 @@ class BFMC_App:
         if frame is not None and self.telemetry.is_recording:
             self.telemetry.write_frame(frame)
 
-        # ── WEB DASHBOARD PUSH + COMMAND PROCESSING ──────────
-        if self.web is not None:
-            battery_v_web = getattr(self.handler.status, 'battery_voltage', 0.0) if hasattr(self.handler, 'status') else 0.0
-            bat_pct_web   = max(0, min(100, int((battery_v_web - BATTERY_MIN_V) / (BATTERY_MAX_V - BATTERY_MIN_V) * 100))) if battery_v_web > 0 else 0
-            self.web.push_telemetry(
-                mode             = "AUTO" if self.is_auto_mode else "MANUAL",
-                speed_pwm        = int(self.current_speed),
-                steer_deg        = round(self.current_steer, 2),
-                yaw_deg          = round(self.imu.get_yaw(), 2),
-                roll_deg         = round(self.imu.get_roll(), 2),
-                pitch_deg        = round(self.imu.get_pitch(), 2),
-                car_x            = round(self.car_x, 3),
-                car_y            = round(self.car_y, 3),
-                lane_anchor      = getattr(lane_result, 'anchor', ''),
-                target_x         = round(getattr(lane_result, 'target_x', 320.0), 1),
-                lateral_err_px   = round(getattr(lane_result, 'lateral_error_px', 0.0), 1),
-                lane_confidence  = round(getattr(lane_result, 'confidence', 0.0), 2),
-                active_sign      = active_sign_cmd or '',
-                yolo_labels      = ai_labels if 'ai_labels' in dir() else [],
-                battery_pct      = bat_pct_web,
-                loop_hz          = round(1.0 / dt, 1) if dt > 0 else 0.0,
-                is_recording     = self.telemetry.is_recording,
-                base_speed       = float(self.ui.slider_base_speed.get() if not self.headless else base_speed),
-                steer_mult       = float(self.ui.slider_steer_mult.get() if not self.headless else 1.0),
-                sign_detect_m    = float(self.ui.slider_sign_detect.get() if not self.headless else SIGN_DETECT_DEFAULT_M),
-                sign_act_m       = float(self.ui.slider_sign_act.get() if not self.headless else SIGN_ACT_DEFAULT_M),
-            )
-            if frame is not None:
-                self.web.push_frame(frame)
-
-            for web_cmd in self.web.pop_commands():
-                action = web_cmd.get("action", "")
-                value  = web_cmd.get("value")
-                if action == "e_stop":
-                    self.is_auto_mode = False
-                    self.current_speed = 0.0
-                    self.current_steer = 0.0
-                    if self.is_connected:
-                        self.handler.set_speed(0)
-                        self.handler.set_steering(0)
-                    if not self.headless:
-                        self.ui.log_event("🛑 WEB: Emergency Stop triggered!", "DANGER")
-                elif action == "toggle_auto":
-                    self.toggle_auto_mode()
-                elif action == "toggle_adas":
-                    self.toggle_adas_mode()
-                elif action == "clear_route":
-                    self.clear_route()
-                elif action == "start_recording":
-                    if not self.telemetry.is_recording:
-                        self.toggle_recording()
-                elif action == "stop_recording":
-                    if self.telemetry.is_recording:
-                        self.toggle_recording()
-                elif action == "set_base_speed" and value is not None and not self.headless:
-                    self.ui.slider_base_speed.set(float(value))
-                elif action == "set_steer_mult" and value is not None and not self.headless:
-                    self.ui.slider_steer_mult.set(float(value))
-                elif action == "set_sign_detect" and value is not None and not self.headless:
-                    self.ui.slider_sign_detect.set(float(value))
-                elif action == "set_sign_act" and value is not None and not self.headless:
-                    self.ui.slider_sign_act.set(float(value))
+        # ── ACTIVE INDICATOR KEYS (used by Tkinter UI + web) ─────
+        active_keys = []
+        if active_sign_cmd:
+            cmd_l = active_sign_cmd.lower()
+            if 'stop' in cmd_l: active_keys.append('stop_sign')
+            elif 'no_entry' in cmd_l or 'no-entry' in cmd_l: active_keys.append('no_entry')
+            elif 'pedestrian' in cmd_l or 'crosswalk' in cmd_l: active_keys.append('pedestrian')
+            elif 'highway' in cmd_l: active_keys.append('highway')
+            elif 'park' in cmd_l: active_keys.append('park')
+            else: active_keys.append('caution')
+        if getattr(self, 'active_blocks', None):
+            if self.active_blocks.get('crosswalk') or self.active_blocks.get('pedestrian'):
+                if 'pedestrian' not in active_keys: active_keys.append('pedestrian')
+            if self.active_blocks.get('priority'):
+                if 'caution' not in active_keys: active_keys.append('caution')
+        if getattr(self, 'in_highway_mode', False) and 'highway' not in active_keys:
+            active_keys.append('highway')
+        if behav_out:
+            ls = getattr(behav_out, 'light_status', '')
+            if 'RED' in ls: active_keys.append('red_light')
+            elif 'YELLOW' in ls: active_keys.append('yellow_light')
+            elif 'GREEN' in ls: active_keys.append('green_light')
+            if getattr(behav_out, 'parking_state', 'NONE') not in ('NONE', 'DONE'): active_keys.append('park')
+            if getattr(behav_out, 'state', '') == 'SYS_LANE_CHANGE_LEFT': active_keys.append('overtake')
+            if getattr(behav_out, 'zone_mode', '') == 'HIGHWAY': active_keys.append('highway')
 
         # ── UI UPDATES ────────────────────────────────────────
         if not self.headless:
             hz = 1.0 / dt if dt > 0 else 0.0
             self.current_hz = 0.8 * self.current_hz + 0.2 * hz
             self.ui.lbl_hz.config(text=f"{self.current_hz:.1f} Hz", fg="cyan")
-            
+
             mode_str = "AUTONOMOUS" if self.is_auto_mode else "MANUAL"
             if self.is_playing_back: mode_str = "REVERSE PARKING" if self.is_parking_reverse_mode else "PARKING PLAYBACK"
             if self.is_calibrating: mode_str = "CALIBRATING..."
-            
-            # Battery — calculated once and reused throughout this UI block
+
             battery_v   = getattr(self.handler.status, 'battery_voltage', 0.0) if hasattr(self.handler, 'status') else 0.0
             battery_pct = max(0, min(100, int((battery_v - BATTERY_MIN_V) / (BATTERY_MAX_V - BATTERY_MIN_V) * 100))) if battery_v > 0 else 0
             battery_color = "green" if battery_pct > 50 else "orange" if battery_pct > 20 else "red"
@@ -893,49 +942,15 @@ class BFMC_App:
             imu_values = f"R:{self.imu.get_roll():.1f}° P:{self.imu.get_pitch():.1f}° Y:{self.imu.get_yaw():.1f}°"
             self.ui.lbl_imu.config(text=f"{imu_text} | {imu_values}", fg=imu_color)
             self.ui.lbl_battery.config(text=f"BAT: {battery_pct}% ({battery_v:.1f}V)", fg=battery_color)
-            
-            # --- Update Indicators ---
-            active_keys = []
-            if active_sign_cmd:
-                cmd_l = active_sign_cmd.lower()
-                if 'stop' in cmd_l: active_keys.append('stop_sign')
-                elif 'no_entry' in cmd_l or 'no-entry' in cmd_l: active_keys.append('no_entry')
-                elif 'pedestrian' in cmd_l or 'crosswalk' in cmd_l: active_keys.append('pedestrian')
-                elif 'highway' in cmd_l: active_keys.append('highway')
-                elif 'park' in cmd_l: active_keys.append('park')
-                else: active_keys.append('caution')
-                
-            # Keep Indicators glowing if their internal logic blocks are still active
-            if getattr(self, 'active_blocks', None):
-                if self.active_blocks.get('crosswalk') or self.active_blocks.get('pedestrian'):
-                    if 'pedestrian' not in active_keys: active_keys.append('pedestrian')
-                if self.active_blocks.get('priority'):
-                    if 'caution' not in active_keys: active_keys.append('caution')
-                    
-            if getattr(self, 'in_highway_mode', False) and 'highway' not in active_keys:
-                active_keys.append('highway')
-                
-            if behav_out:
-                ls = getattr(behav_out, 'light_status', '')
-                if 'RED' in ls: active_keys.append('red_light')
-                elif 'YELLOW' in ls: active_keys.append('yellow_light')
-                elif 'GREEN' in ls: active_keys.append('green_light')
-                if getattr(behav_out, 'parking_state', 'NONE') not in ('NONE', 'DONE'): active_keys.append('park')
-                if getattr(behav_out, 'state', '') == 'SYS_LANE_CHANGE_LEFT': active_keys.append('overtake')
-                if getattr(behav_out, 'zone_mode', '') == 'HIGHWAY': active_keys.append('highway')
-            
+
             self.ui.update_indicators(active_keys)
-            # -------------------------
 
             self.render_map()
 
         if self.headless:
             print(f"[CTRL] Spd:{int(self.current_speed):4d} | Str:{self.current_steer:5.1f}° | Yaw:{self.imu.get_yaw():5.1f}° | Pos:({self.car_x:.1f},{self.car_y:.1f}) | {1/dt:.0f}Hz", end="\r")
 
-        if self.headless:
-            time.sleep(0.05)
-            self.control_loop()
-        else:
+        if not self.headless:
             self.root.after(50, self.control_loop)
 
     def open_imu_panel(self):
@@ -974,6 +989,45 @@ class BFMC_App:
                 self.ui.btn_record.config(text="⏹ STOP RECORDING", bg="#27ae60")
                 self.ui.log_event(f"⏺ Recording started → {path}", "SUCCESS")
 
+    def calibrate_to_start(self):
+        """Snap position to start node and align heading to the first path segment.
+        Records the IMU yaw and path heading as the calibration origin so the
+        kinematics loop applies IMU delta on top of the known route direction.
+        """
+        if not self.start_node or self.start_node not in self.map_engine.G.nodes:
+            if not self.headless:
+                self.ui.log_event("⚠ No start node set — calibration skipped.", "WARN")
+            return
+
+        nd = self.map_engine.G.nodes[self.start_node]
+        self.car_x = float(nd.get('x', self.car_x))
+        self.car_y = float(nd.get('y', self.car_y))
+
+        path_yaw = math.radians(self.imu.get_yaw())   # fallback = current IMU
+        if self.path and len(self.path) >= 2:
+            n1 = str(self.path[0])
+            n2 = str(self.path[1])
+            if n1 in self.map_engine.G.nodes and n2 in self.map_engine.G.nodes:
+                x1 = float(self.map_engine.G.nodes[n1].get('x', 0))
+                y1 = float(self.map_engine.G.nodes[n1].get('y', 0))
+                x2 = float(self.map_engine.G.nodes[n2].get('x', 0))
+                y2 = float(self.map_engine.G.nodes[n2].get('y', 0))
+                path_yaw = math.atan2(y2 - y1, x2 - x1)
+
+        self._calib_path_yaw = path_yaw
+        self._calib_imu_yaw  = self.imu.get_yaw()
+        self.car_yaw         = path_yaw
+        self.car_speed_ms    = 0.0
+        self.visited_path_nodes.clear()
+
+        if not self.headless:
+            self.ui.log_event(
+                f"📍 Calibrated — node {self.start_node} "
+                f"({self.car_x:.2f}, {self.car_y:.2f}) m  "
+                f"hdg {math.degrees(path_yaw):.1f}°", "SUCCESS"
+            )
+            self.render_map()
+
     def clear_route(self):
         self.start_node = None; self.end_node = None; self.pass_nodes = []; self.path = []
         self.path_signs = []
@@ -1009,7 +1063,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BFMC 2026 Unified Autonomous Stack")
     parser.add_argument("--headless", action="store_true", help="Run in terminal only, no Tkinter GUI")
     parser.add_argument("--no-v2x",  action="store_true", help="Do not start the background V2X servers")
-    parser.add_argument("--web",     action="store_true", help="Start the Flask web dashboard on port 8080")
     args = parser.parse_args()
 
     v2x_procs = []

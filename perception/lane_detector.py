@@ -2,7 +2,8 @@ import cv2
 import numpy as np
 import math
 from dataclasses import dataclass
-from perception.lane_tracker import HybridLaneTracker, DeadReckoningNavigator
+from perception.lane_tracker import HybridLaneTracker
+from config import LANE_SRC_PTS, LANE_DST_PTS, LANE_CLIP_MASK_WARPED
 
 @dataclass
 class LaneResult:
@@ -67,11 +68,8 @@ class VisualOdometry:
 
 class LaneDetector:
     def __init__(self):
-        # SRC calibrated from actual lane line positions in the BFMC video:
-        # left line at (x~80,y=290) top and (x~0,y=430) bottom.
-        # DST left boundary (x=150) = left lane line; center (x=320) = lane centre.
-        self.SRC_PTS = np.float32([[80, 290], [280, 290], [0, 430], [200, 430]])
-        self.DST_PTS = np.float32([[150, 0], [490, 0], [150, 480], [490, 480]])
+        self.SRC_PTS = np.float32(LANE_SRC_PTS)
+        self.DST_PTS = np.float32(LANE_DST_PTS)
         self.M_forward = cv2.getPerspectiveTransform(self.SRC_PTS, self.DST_PTS)
         self.clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         self.tracker = HybridLaneTracker(img_shape=(480, 640))
@@ -106,8 +104,7 @@ class LaneDetector:
             M_use = self.M_forward
 
         warped_colour = cv2.warpPerspective(process_frame, M_use, (640, 480))
-        # Blank out camera-mount hardware that appears in the lower warped region
-        warped_colour[360:480, 280:460] = 0
+        warped_colour[LANE_CLIP_MASK_WARPED] = 0
 
         lab = cv2.cvtColor(warped_colour, cv2.COLOR_BGR2LAB)
         L = lab[:, :, 0]   # Raw L — no CLAHE (CLAHE amplifies road-texture noise)

@@ -66,8 +66,7 @@ class HybridLaneTracker:
         self.right_conf = 0
         self.left_stale  = 0
         self.right_stale = 0
-        # DST spans x=150-490 (340 px) = one full lane in the recalibrated bird's-eye view.
-        self.estimated_lane_width = 340.0
+        self.estimated_lane_width = 380.0
         self.right_lost_frames = 0
         self.dead_reckoner = DeadReckoningNavigator()
 
@@ -112,6 +111,15 @@ class HybridLaneTracker:
             self.right_stale += 1
             if self.right_stale > self.STALE_FIT_FRAMES:
                 self.right_fit, self.sr = None, None
+
+        # Collision guard: if both fits converge within 120 px of each other, drop the weaker one
+        if has_l and has_r and self.left_fit is not None and self.right_fit is not None:
+            sep = float(np.polyval(self.right_fit, self.h * 0.75) - np.polyval(self.left_fit, self.h * 0.75))
+            if sep < 120:
+                if self.left_conf < self.right_conf:
+                    self.left_fit, self.sl, self.left_stale, has_l = None, None, self.STALE_FIT_FRAMES, False
+                else:
+                    self.right_fit, self.sr, self.right_stale, has_r = None, None, self.STALE_FIT_FRAMES, False
 
         if has_l and has_r:
             if not self._width_sane(self.left_fit, self.right_fit):
@@ -217,27 +225,38 @@ class HybridLaneTracker:
     def _sliding_window(self, warped, nzx, nzy, map_hint: str = "STRAIGHT"):
         dbg  = cv2.cvtColor(warped, cv2.COLOR_GRAY2BGR)
         hist = np.sum(warped[self.h // 2:, :], axis=0)
-        mid, margin = int(self.w * 0.40), self.SW_MARGIN
+        mid, margin = self.w // 2, self.SW_MARGIN   # true centre = 320
 
         shift = 0
-        if map_hint == "LEFT":  shift = -80
-        elif map_hint == "RIGHT": shift = 80
+        if map_hint == "LEFT":  shift = -60
+        elif map_hint == "RIGHT": shift = 60
 
-        l_lo =  max(margin, margin + shift)
-        l_hi =  max(l_lo + 1, mid - margin + shift)
-        r_lo =  max(margin, mid + margin + shift)
-        r_hi =  min(self.w - margin, self.w - margin)   
+        # Strict left / right zones with a 60 px dead band at the centre
+        l_lo = max(0,        shift)
+        l_hi = max(l_lo + 1, mid - 30 + shift)
+        r_lo = min(self.w,   mid + 30 + shift)
+        r_hi = self.w
 
         lb = int(np.argmax(hist[l_lo:l_hi])) + l_lo if l_hi > l_lo else margin
-        rb = int(np.argmax(hist[r_lo:r_hi])) + r_lo if r_hi > r_lo else mid + margin
+        rb = int(np.argmax(hist[r_lo:r_hi])) + r_lo if r_hi > r_lo else self.w - margin
 
-        if abs(rb - lb) < 100:
-            smoothed = np.convolve(hist.astype(float), np.ones(20) / 20, mode='same')
-            p1 = int(np.argmax(smoothed))
-            tmp = smoothed.copy()
-            tmp[max(0, p1-40):min(self.w, p1+40)] = 0
-            p2 = int(np.argmax(tmp))
-            lb, rb = (min(p1, p2), max(p1, p2))
+        l_val = int(hist[lb]) if 0 <= lb < self.w else 0
+        r_val = int(hist[rb]) if 0 <= rb < self.w else 0
+
+        # Ghost estimation: when only one side has real signal, project the other
+        # from the known estimated lane width instead of letting both chase the same line.
+        # When neither side has signal, park both at symmetric positions around centre
+        # so windows don't snap to corners (argmax(zeros)==0 → left snaps to x=0).
+        GHOST_MIN = 80  # histogram pixel-sum threshold to count as a real peak
+        if l_val >= GHOST_MIN and r_val < GHOST_MIN:
+            rb = int(np.clip(lb + self.estimated_lane_width, r_lo, self.w - margin))
+        elif r_val >= GHOST_MIN and l_val < GHOST_MIN:
+            lb = int(np.clip(rb - self.estimated_lane_width, margin, l_hi - 1))
+        else:
+            # No signal on either side — default to symmetric positions around mid
+            half = int(self.estimated_lane_width // 2)
+            lb = int(np.clip(mid - half, margin, mid - 30))
+            rb = int(np.clip(mid + half, mid + 30, self.w - margin))
 
         wh = self.h // self.NWINDOWS
         lx, rx = lb, rb
@@ -271,9 +290,23 @@ class HybridLaneTracker:
         li = band(self.sl) if self.sl is not None else np.array([], dtype=int)
         ri = band(self.sr) if self.sr is not None else np.array([], dtype=int)
 
-        if len(li) < self.MIN_PIX_OK or len(ri) < self.MIN_PIX_OK:
+        # Only fall back to sliding window when BOTH lines are simultaneously absent.
+        # If just one is missing, keep POLY mode so the stale fit holds position
+        # and the found line's band cannot migrate to the other side.
+        if len(li) < self.MIN_PIX_OK and len(ri) < self.MIN_PIX_OK:
             self.mode = "SEARCH"
             return self._sliding_window(warped, nzx, nzy, map_hint=map_hint)
+
+        # Collision guard inside poly search: reject pixels claimed by the stronger
+        # band if both bands overlap in x (< 120 px apart at mid-image).
+        if len(li) > 0 and len(ri) > 0:
+            li_cx = float(np.mean(nzx[li]))
+            ri_cx = float(np.mean(nzx[ri]))
+            if abs(ri_cx - li_cx) < 120:
+                if len(li) < len(ri):
+                    li = np.array([], dtype=int)
+                else:
+                    ri = np.array([], dtype=int)
 
         if len(li): dbg[nzy[li], nzx[li]] = [255, 80, 80]
         if len(ri): dbg[nzy[ri], nzx[ri]] = [80,  80, 255]
@@ -282,7 +315,7 @@ class HybridLaneTracker:
     def _width_sane(self, lf, rf, y=400):
         if rf is None or lf is None: return False
         w = np.polyval(rf, y) - np.polyval(lf, y)
-        return 180 < w < 420
+        return 150 < w < 550
 
     def _ema(self, prev, new, alpha=None):
         if alpha is None:

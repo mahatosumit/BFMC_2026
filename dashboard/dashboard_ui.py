@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
+# pyrefly: ignore [missing-import]
 from PIL import Image, ImageTk
 from datetime import datetime
 from config import (
@@ -39,9 +40,16 @@ class DashboardUI:
             command=self.controller.open_imu_panel,
         )
         self.btn_imu_3d.pack(side=tk.LEFT, padx=5)
+        self.btn_park_dash = tk.Button(
+            status, text="🅿 OFF",
+            bg="#37474f", fg="white", relief="flat",
+            font=("Helvetica", 9, "bold"), activebackground="#546e7a",
+            command=self.controller.toggle_parking_dashboard,
+        )
+        self.btn_park_dash.pack(side=tk.LEFT, padx=5)
         self.lbl_imu = tk.Label(status, text="IMU: DISCONNECTED | R:0.0° P:0.0° Y:0.0°", bg=THEME["panel"], fg="grey", font=("Courier", 10, "bold"))
         self.lbl_imu.pack(side=tk.RIGHT, padx=15)
-        self.lbl_battery = tk.Label(status, text="BAT: --%", bg=THEME["panel"], fg="orange", font=("Courier", 10))
+        self.lbl_battery = tk.Label(status, text="BAT: --%", bg=THEME["panel"], fg=THEME["warning"], font=("Courier", 10))
         self.lbl_battery.pack(side=tk.RIGHT, padx=15)
         self.lbl_ai = tk.Label(status, text="AI: OFF", bg=THEME["panel"], fg="grey", font=("Courier", 10))
         self.lbl_ai.pack(side=tk.RIGHT, padx=15)
@@ -52,21 +60,21 @@ class DashboardUI:
         
         # --- LEFT PANEL (Cameras) ---
         left_panes = ttk.PanedWindow(main_panes, orient=tk.VERTICAL)
-        main_panes.add(left_panes, weight=1)
-        
-        cam_frm = tk.LabelFrame(left_panes, text="Raw Camera (YOLO ADAS)", bg=THEME["panel"], fg="white", font=THEME["font_h"])
-        self.cam_label = tk.Label(cam_frm, bg="black")
-        self.cam_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        placeholder = Image.new('RGB', (440, 330), color='black')
+        main_panes.add(left_panes, weight=2)
+
+        self.cam_frm = tk.LabelFrame(left_panes, text="Raw Camera (YOLO ADAS)", bg=THEME["panel"], fg="white", font=THEME["font_h"])
+        self.cam_label = tk.Label(self.cam_frm, bg="black")
+        self.cam_label.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        placeholder = Image.new('RGB', (320, 240), color='black')
         self._ph_img = ImageTk.PhotoImage(placeholder)
         self.cam_label.configure(image=self._ph_img)
-        left_panes.add(cam_frm, weight=1)
+        left_panes.add(self.cam_frm, weight=1)
 
-        bev_frm = tk.LabelFrame(left_panes, text="Bird's Eye View (VIZ-06)", bg=THEME["panel"], fg="white", font=THEME["font_h"])
-        self.bev_label = tk.Label(bev_frm, bg="black")
-        self.bev_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.bev_frm = tk.LabelFrame(left_panes, text="Bird's Eye View (VIZ-06)", bg=THEME["panel"], fg="white", font=THEME["font_h"])
+        self.bev_label = tk.Label(self.bev_frm, bg="black")
+        self.bev_label.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
         self.bev_label.configure(image=self._ph_img)
-        left_panes.add(bev_frm, weight=1)
+        left_panes.add(self.bev_frm, weight=1)
         
         # --- MIDDLE PANEL (Controls & Tuning) ---
         mid_col_panes = ttk.PanedWindow(main_panes, orient=tk.VERTICAL)
@@ -86,8 +94,8 @@ class DashboardUI:
         sys_frm.pack(fill=tk.X, padx=5, pady=(0, 5))
         sys_frm.columnconfigure(0, weight=1); sys_frm.columnconfigure(1, weight=1)
         
-        tk.Button(sys_frm, text="💾 Save Config", bg="#2980b9", fg="white", relief="flat", font=("Helvetica", 9, "bold"), command=self.controller.save_config).grid(row=0, column=0, sticky="ew", padx=3, pady=3)
-        tk.Button(sys_frm, text="📂 Load Config", bg="#27ae60", fg="white", relief="flat", font=("Helvetica", 9, "bold"), command=self.controller.load_config).grid(row=0, column=1, sticky="ew", padx=3, pady=3)
+        tk.Button(sys_frm, text="💾 Save Config", bg=THEME["accent"], fg="white", relief="flat", font=("Helvetica", 9, "bold"), command=self.controller.save_config).grid(row=0, column=0, sticky="ew", padx=3, pady=3)
+        tk.Button(sys_frm, text="📂 Load Config", bg=THEME["success"], fg="white", relief="flat", font=("Helvetica", 9, "bold"), command=self.controller.load_config).grid(row=0, column=1, sticky="ew", padx=3, pady=3)
         self.btn_connect = tk.Button(sys_frm, text="CONNECT CAR", bg=THEME["accent"], fg="white", relief="flat", font=("Helvetica", 10, "bold"), command=self.controller.toggle_connection)
         self.btn_connect.grid(row=1, column=0, columnspan=2, sticky="ew", padx=3, pady=3)
         self.btn_auto = tk.Button(sys_frm, text="MODE: MANUAL", bg="#444", fg="white", relief="flat", font=THEME["font_h"], command=self.controller.toggle_auto_mode)
@@ -152,7 +160,7 @@ class DashboardUI:
             font=("Courier", 9, "bold"),
         )
         self.lbl_loc.pack(side=tk.RIGHT, padx=(0, 10))
-        self.log_text = tk.Text(log_frm, height=4, bg="black", fg="#00ff00", font=("Courier", 10), state="disabled", relief="flat")
+        self.log_text = tk.Text(log_frm, height=4, bg=THEME["log_bg"], fg=THEME["log_fg"], font=("Courier", 10), state="disabled", relief="flat")
         scroll_log = ttk.Scrollbar(log_frm, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll_log.set)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -179,7 +187,7 @@ class DashboardUI:
         right_panes.pack(fill=tk.BOTH, expand=True, padx=5)
         map_container = tk.Frame(right_panes, bg=THEME["bg"])
         right_panes.add(map_container, weight=3)
-        self.map_canvas = tk.Canvas(map_container, bg="black", highlightthickness=0)
+        self.map_canvas = tk.Canvas(map_container, bg=THEME["canvas"], highlightthickness=0)
         
         # NOTE: Map bindings are now injected inside main.py initialization directly, allowing 
         # both Left & Right click without crossing files.
@@ -266,9 +274,14 @@ class DashboardUI:
     def build_nav_tools(self, controller):
         self.var_path = tk.StringVar(value="START")
         tk.Radiobutton(self.tool_frame, text="🟢 Start", variable=self.var_path, value="START", bg=THEME["panel"], fg="white", selectcolor="#444", indicatoron=0, font=("Helvetica", 9, "bold")).pack(side=tk.LEFT, padx=5, pady=5)
-        tk.Radiobutton(self.tool_frame, text="🔵 Pass", variable=self.var_path, value="PASS", bg=THEME["panel"], fg="white", selectcolor="#444", indicatoron=0, font=("Helvetica", 9, "bold")).pack(side=tk.LEFT, padx=5, pady=5)
-        tk.Radiobutton(self.tool_frame, text="🔴 End", variable=self.var_path, value="END", bg=THEME["panel"], fg="white", selectcolor="#444", indicatoron=0, font=("Helvetica", 9, "bold")).pack(side=tk.LEFT, padx=5, pady=5)
-        tk.Button(self.tool_frame, text="Clear Route", bg=THEME["danger"], fg="white", relief="flat", font=("Helvetica", 9, "bold"), command=controller.clear_route).pack(side=tk.RIGHT, padx=10, pady=5)
+        tk.Radiobutton(self.tool_frame, text="🔵 Pass",  variable=self.var_path, value="PASS",  bg=THEME["panel"], fg="white", selectcolor="#444", indicatoron=0, font=("Helvetica", 9, "bold")).pack(side=tk.LEFT, padx=5, pady=5)
+        tk.Radiobutton(self.tool_frame, text="🔴 End",   variable=self.var_path, value="END",   bg=THEME["panel"], fg="white", selectcolor="#444", indicatoron=0, font=("Helvetica", 9, "bold")).pack(side=tk.LEFT, padx=5, pady=5)
+        tk.Button(self.tool_frame, text="📍 Recalibrate", bg="#607d8b", fg="white", relief="flat",
+                  font=("Helvetica", 9, "bold"),
+                  command=controller.calibrate_to_start).pack(side=tk.LEFT, padx=10, pady=5)
+        tk.Button(self.tool_frame, text="Clear Route", bg=THEME["danger"], fg="white", relief="flat",
+                  font=("Helvetica", 9, "bold"),
+                  command=controller.clear_route).pack(side=tk.RIGHT, padx=10, pady=5)
 
     def build_sign_tools(self, controller):
         self.var_sign = tk.StringVar(value="stop-sign")

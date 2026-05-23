@@ -51,9 +51,12 @@ class Camera:
                     if attempt < 2:  # Don't sleep on last attempt
                         time.sleep(2)  # Wait 2 seconds before retry
         
-        # Fallback to default webcam if no sim video and no picamera
+        # Fallback to default webcam if no sim video and no picamera.
+        # Use DirectShow on Windows — MSMF (default) raises MF_E_HW_MFT_FAILED_START_STREAMING
+        # (-1072875772) on many USB webcams even though the device opens without error.
         if not self.sim_video and self.camera is None:
-            self.video_cap = cv2.VideoCapture(0)
+            backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
+            self.video_cap = cv2.VideoCapture(0, backend)
             if self.video_cap.isOpened():
                 log.info("Loaded default webcam")
                 threading.Thread(target=self._video_worker, daemon=True, name="video_worker").start()

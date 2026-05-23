@@ -6,7 +6,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from config import (GRAPH_FILE, SVG_FILE, SIGNS_DB_FILE, THEME, SIGN_MAP,
                      REAL_WIDTH_M, REAL_HEIGHT_M, FINAL_SCALE_X, FINAL_SCALE_Y,
-                     FINAL_OFF_X, FINAL_OFF_Y)
+                     FINAL_OFF_X, FINAL_OFF_Y,
+                     MAP_NODE_SHOW, MAP_NODE_OPACITY, MAP_NODE_MIN_SPACING_PX)
 
 class MapEngine:
     def __init__(self):
@@ -178,6 +179,39 @@ class MapEngine:
         pil = self.pil_bg.copy()
         draw = ImageDraw.Draw(pil)
 
+        # ── graph node overlay ────────────────────────────────
+        if MAP_NODE_SHOW and MAP_NODE_OPACITY > 0.0:
+            alpha      = max(0, min(255, int(MAP_NODE_OPACITY * 255)))
+            spacing2   = MAP_NODE_MIN_SPACING_PX ** 2
+            node_layer = Image.new("RGBA", pil.size, (0, 0, 0, 0))
+            ndraw      = ImageDraw.Draw(node_layer)
+            _last_cell: dict = {}
+
+            for nid, (px, py) in self.node_pixels.items():
+                try:
+                    is_orig = int(nid) <= 600   # IDs > 600 are Catmull-Rom interpolated
+                except ValueError:
+                    is_orig = True
+
+                if is_orig:
+                    # Junction / key waypoint — always draw, slightly larger
+                    ndraw.ellipse([px-3, py-3, px+3, py+3],
+                                  fill=(96, 112, 128, alpha),
+                                  outline=(144, 168, 184, alpha))
+                else:
+                    # Interpolated node — skip if too close to last drawn one
+                    cell = (px // MAP_NODE_MIN_SPACING_PX, py // MAP_NODE_MIN_SPACING_PX)
+                    last = _last_cell.get(cell)
+                    if last and (px - last[0]) ** 2 + (py - last[1]) ** 2 < spacing2:
+                        continue
+                    _last_cell[cell] = (px, py)
+                    ndraw.ellipse([px-1, py-1, px+1, py+1],
+                                  fill=(58, 74, 84, alpha))
+
+            pil  = Image.alpha_composite(pil.convert("RGBA"), node_layer).convert("RGB")
+            draw = ImageDraw.Draw(pil)   # refresh draw handle after composite
+        # ─────────────────────────────────────────────────────
+
         if path:
             for i in range(len(path) - 1):
                 n1, n2 = path[i], path[i + 1]
@@ -230,40 +264,11 @@ class MapEngine:
                 mark(n, "cyan")
         mark(end_node, THEME["danger"])
         
-        # Calculate visual yaw to make the car always face the path (or fallback to real yaw)
-        visual_yaw = car_yaw
-        if path and len(path) > 1:
-            min_dist = float('inf')
-            target_node = path[1]
-            
-            # Find the segment the car is currently closest to
-            for i in range(len(path) - 1):
-                n1, n2 = str(path[i]), str(path[i+1])
-                if n1 not in self.G.nodes: continue
-                
-                n1x = float(self.G.nodes[n1].get('x', 0))
-                n1y = float(self.G.nodes[n1].get('y', 0))
-                dist = math.hypot(car_x - n1x, car_y - n1y)
-                
-                if dist < min_dist:
-                    min_dist = dist
-                    target_node = n2
-            
-            # Point to the next node in that segment
-            if str(target_node) in self.G.nodes:
-                tx = float(self.G.nodes[str(target_node)].get('x', 0))
-                ty = float(self.G.nodes[str(target_node)].get('y', 0))
-                # Prevent erratic spinning if the car is directly exactly on top of the node
-                if math.hypot(tx - car_x, ty - car_y) > 0.1:
-                    visual_yaw = math.atan2(ty - car_y, tx - car_x)
-
-        # Draw the car ALWAYS (removed `if is_connected:` requirement)
-        # Use an orange color if disconnected to alert the user about hardware failure/battery
+        # Car arrow uses raw IMU yaw — no path-facing override
         car_color = "cyan" if is_connected else "orange"
-        
         cx, cy = self.to_pixel(car_x, car_y)
-        hx = cx + math.cos(-visual_yaw) * 20
-        hy = cy + math.sin(-visual_yaw) * 20
+        hx = cx + math.cos(-car_yaw) * 20
+        hy = cy + math.sin(-car_yaw) * 20
 
         if loc_viz:
             try:

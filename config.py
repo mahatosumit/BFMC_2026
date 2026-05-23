@@ -90,20 +90,51 @@ CAMERA_BUFFER_FRAMES    = 2            # Frame queue depth (reduces latency)
 #    DST centre     (x=320)  → expected lane centre  ← Stanley zero-error point
 #    DST right edge (x=490)  → estimated right boundary
 # ─────────────────────────────────────────────────────────────────────────────
+#
+#  HOW TO TUNE THE BIRD'S-EYE VIEW (BEV)
+#  ──────────────────────────────────────
+#  The 4 SRC points define a trapezoid in the RAW camera frame (640×480).
+#  The 4 DST points define where those 4 corners land in the BEV output (also 640×480).
+#
+#  SRC SHAPE RULES:
+#    • Bottom row (high y) = road close to the car  → should be WIDE
+#    • Top row   (low  y) = road far from the car   → should be NARROW
+#      (matches the perspective convergence you see in the camera image)
+#    • Left/right edges should sit just OUTSIDE the lane markings
+#
+#  TO ZOOM OUT  → widen SRC (increase x-spread at bottom, decrease top y value)
+#  TO ZOOM IN   → narrow SRC (reduce x-spread or raise top y value)
+#  TO SHIFT LEFT  → move both SRC left columns left
+#  TO SHIFT RIGHT → move both SRC right columns right
+#
+#  DST is always the full output rectangle [[0,0],[640,0],[0,480],[640,480]]
+#  unless you want black borders on the sides (then shrink DST x-range).
+#
+#  WORKFLOW:
+#    1. Pause the car / use a still frame.
+#    2. Print pixel coords of the two lane lines at y=top_row and y=bottom_row
+#       (use cv2.imshow + mouse callback, or mark points in Paint).
+#    3. Set SRC top-left  = (left_line_x_at_top  - margin, top_row)
+#              top-right = (right_line_x_at_top  + margin, top_row)
+#              bot-left  = (left_line_x_at_bot   - margin, bottom_row)
+#              bot-right = (right_line_x_at_bot  + margin, bottom_row)
+#    4. Restart and inspect the BEV — the lane lines should appear nearly vertical.
+#
 LANE_SRC_PTS = [
-    [ 80, 290],   # top-left  — original frame (px)
-    [280, 290],   # top-right
-    [  0, 430],   # bottom-left
-    [200, 430],   # bottom-right
+    [160, 265],   # top-left  — left of left line at y=265 (line at ~x=205)
+    [370, 265],   # top-right — right of right line at y=265 (line at ~x=280)
+    [ 60, 450],   # bottom-left  — left of left line at y=450 (line at ~x=115)
+    [400, 450],   # bottom-right — right of right line at y=450 (line at ~x=330)
 ]
 LANE_DST_PTS = [
-    [150,   0],   # top-left  — bird's-eye output (px)
-    [490,   0],   # top-right
-    [150, 480],   # bottom-left
-    [490, 480],   # bottom-right
+    [  0,   0],   # full-width output — spreads lanes to BEV x≈110 (left) and x≈480 (right)
+    [640,   0],
+    [  0, 480],
+    [640, 480],
 ]
 # Slice [y0:y1, x0:x1] to zero-out camera-mount hardware in the warped image
-LANE_CLIP_MASK_WARPED   = (slice(360, 480), slice(280, 460))
+# Lane lines at BEV x≈110 (left) and x≈480 (right) — mask only the bottom-center dead zone
+LANE_CLIP_MASK_WARPED   = (slice(460, 480), slice(290, 360))
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  LANE DETECTION — Binary Thresholding
@@ -251,13 +282,6 @@ LOG_CSV_FIELDS = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  WEB DASHBOARD
-# ─────────────────────────────────────────────────────────────────────────────
-WEB_DASHBOARD_HOST      = "0.0.0.0"  # Listen on all interfaces (LAN-accessible)
-WEB_DASHBOARD_PORT      = 8080
-WEB_DASHBOARD_FPS       = 10         # MJPEG stream frame-rate cap
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  LOCAL DASHBOARD — Slider defaults
 # ─────────────────────────────────────────────────────────────────────────────
 DASH_BASE_SPEED_DEFAULT     = 150.0
@@ -267,6 +291,15 @@ DASH_OVERTAKE_DIST_DEFAULT  = 1.2
 DASH_OVERTAKE_TIME_DEFAULT  = 2.0
 DASH_SIGN_DETECT_DEFAULT    = SIGN_DETECT_DEFAULT_M   # keeps them in sync
 DASH_SIGN_ACT_DEFAULT       = SIGN_ACT_DEFAULT_M
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  MAP NODE DISPLAY
+#  Controls how graph nodes appear on the dashboard track map.
+# ─────────────────────────────────────────────────────────────────────────────
+MAP_NODE_SHOW           = True   # False → hide all nodes completely
+MAP_NODE_OPACITY        = 0.10   # 0.0 = invisible  →  1.0 = fully opaque
+MAP_NODE_MIN_SPACING_PX = 100     # skip interpolated nodes closer than this (px)
+                                  # raise to thin out clutter, lower for denser dots
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  UI THEME
@@ -280,6 +313,8 @@ THEME = {
     "danger":  "#f44336",
     "success": "#4caf50",
     "warning": "#ff9800",
+    "log_bg":  "#0d1117",
+    "log_fg":  "#00ff00",
     "font_h":  ("Helvetica", 11, "bold"),
     "font_p":  ("Helvetica", 10),
     "sash":    "#333333",
